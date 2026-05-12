@@ -20,45 +20,46 @@ No network. No analytics. No tracking beyond what OpenTracks itself records.
 ## Build
 
 ```sh
-nix develop                   # JDK 17, Android SDK, gradle, uv, ARM toolchain, qemu
-```
-
-The flake self-advertises the `pebble.cachix.org` binary cache (via `nixConfig`); the first `nix develop` prompts you to trust it. **Accept** — the GCC 4.7 ARM toolchain doesn't build from source against modern GMP. If you decline or run in a context that ignores `nixConfig`, fall back to:
-
-```sh
-nix develop \
-  --option extra-substituters https://pebble.cachix.org \
-  --option extra-trusted-public-keys 'pebble.cachix.org-1:1SYzkyMyCNYELT9CCtBmnq+S6/QfWNFq8ojQzeMmCp4='
-```
-
-### One-time pebble-tool setup
-
-The dev shell ships `uv` rather than a pinned `pebble-tool`. On first shell entry:
-
-```sh
-uv tool install pebble-tool --python 3.13   # canonical install per repebble.com/sdk
-pebble sdk install latest                   # SDK code → ~/.pebble-sdk
-```
-
-The ARM compiler + `qemu-pebble` come from [pebble.nix](https://github.com/pebble-dev/pebble.nix) (NixOS-patched) on `PEBBLE_EXTRA_PATH` and `PEBBLE_QEMU_PATH`. `pebble sdk install` also drops a non-NixOS-compatible toolchain under `~/.pebble-sdk`, but pebble-tool prefers `PEBBLE_EXTRA_PATH` at build time, so the broken downloads are ignored.
-
-### Building
-
-```sh
+nix develop          # bootstraps pebble-tool + Pebble SDK on first entry
 make build           # delegates to companion/ and watchapp/
-
-# Or per-component:
-cd companion && ./gradlew :app:assembleDebug
-cd watchapp   && pebble build
 ```
 
-For watchapp installs, set the Pebble Developer Connection IP:
+First `nix develop` is slow: it installs `pebble-tool` (via `uv` into `~/.local/bin`) and runs `pebble sdk install latest` (which downloads the SDK to `~/.pebble-sdk`). Subsequent entries detect both as present and are silent. The shellHook prints a one-line TOS disclosure before the SDK install so the consent isn't silent.
+
+Set `OPENPEBBLERUN_SKIP_SETUP=1 nix develop` to bypass the auto-install — useful for CI or to replicate bare upstream behavior.
+
+### Cachix
+
+The flake advertises `pebble.cachix.org` via `nixConfig`. Without the substituter, nix tries to build `arm-embedded-toolchain-4.7` from source — it vendors GMP 4.3.2, which won't compile against modern host GCC.
+
+**On NixOS** you must be in `nix.settings.trusted-users` for `nixConfig`-supplied substituters to apply (security-relevant — see [`docs/log.md`](docs/log.md)):
+
+```nix
+# /etc/nixos/configuration.nix
+nix.settings.trusted-users = [ "root" "your-username" ];
+```
+
+`nixos-rebuild switch`, then `nix develop` should prompt to accept the cache once. Decline-then-rerun caches that choice in `~/.local/share/nix/trusted-settings.json`; delete that file to re-prompt.
+
+**On non-NixOS**, `cachix use pebble` once works (it writes `~/.config/nix/nix.conf`).
+
+### Per-component build
+
+```sh
+cd companion && ./gradlew :app:assembleDebug
+cd watchapp  && pebble build
+```
+
+For watchapp installs, set the Pebble Developer Connection IP (one-shot or via shell entry):
 
 ```sh
 PEBBLE_PHONE=192.168.1.42 nix develop
-# then inside the shell:
 cd watchapp && pebble install --phone "$PEBBLE_PHONE"
 ```
+
+### Manual bootstrap
+
+If the auto-install was skipped or failed, run `make pebble-setup` (idempotent). To start from scratch: `make pebble-setup-clean` wipes `~/.pebble-sdk` and uninstalls pebble-tool.
 
 ## License
 

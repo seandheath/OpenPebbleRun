@@ -66,6 +66,24 @@ quick.
 **Rationale:** Spec §4.1 targets the `emery` platform (Pebble Time 2) which is only supported by the CoreDevices pebble-tool fork. pebble.nix already wraps both upstream and CoreDevices toolchains and ships a binary cache (`cachix use pebble`), so users skip a ~30-minute toolchain rebuild. Single composed dev shell beats two-shell juggling.
 **Alternatives considered:** Vendor the Pebble SDK ourselves (rejected — that's pebble.nix's job and they do it better). Manual install instructions in README (rejected — workflow friction discouraged contributors).
 
+## 2026-05-12 — Auto-bootstrap pebble-tool + SDK in shellHook
+
+**Decision:** `flake.nix`'s `shellHook` now installs `pebble-tool` via `uv` and runs `pebble sdk install latest` on first `nix develop` (idempotent on subsequent entries). `OPENPEBBLERUN_SKIP_SETUP=1` opts out. Top-level `make pebble-setup` re-runs the same logic explicitly; `make pebble-setup-clean` wipes both.
+**Rationale:** Research into pebble.nix's current state (May 2026) confirmed no upstream-endorsed pattern beats our hybrid approach: their bundled `pebble-tool` is stuck at v5.0.5 (mainline) / v5.0.21 (stalled PR #12 since Jan 2026), modern SDK manifests require ≥ v5.0.32, and v5.0.35 is on PyPI where `uv` reaches. Auto-installing in the shellHook eliminates the "run these two commands first" preamble for new contributors. The implicit Rebble TOS acceptance is surfaced in a one-line disclosure before the SDK install so consent isn't silent.
+**Alternatives considered:**
+- Printf-only (status quo before this change): explicit but high-friction. Rejected — the two install commands are the same on every fresh checkout, so manual entry is pure ceremony.
+- Custom Nix derivation pinning pebble-tool: rejected upthread (~90 lines of Nix we'd own, re-bump every upstream release).
+- File a PR against pebble.nix bumping pebble-tool: explicitly out of scope for this plan; can revisit if PR #12 stalls indefinitely.
+
+## 2026-05-12 — Trusted-users + cachix as a documented prerequisite
+
+**Decision:** `pebble.cachix.org` is essentially required (the alternative is a doomed `arm-embedded-toolchain-4.7` source build), but consuming it requires the invoking nix user to be in `nix.settings.trusted-users`. README documents both the cachix and the trusted-users requirements; we do not auto-enforce them.
+**Rationale:** A trusted user can substitute any nix store path via custom substituters and disable the sandbox — effectively a root-elevation path for any malicious process running as that user. The marginal risk over having sudo is moderate (mainly userland-malware persistence vectors), but real. For a single-user dev machine this is the standard developer setup and what the wider nix community defaults to; for multi-user/shared boxes it's effectively passwordless sudo and should be avoided. Documenting the tradeoff in the README lets each contributor make an informed choice rather than enforcing one default.
+**Alternatives considered:**
+- Vendor the prebuilt toolchain into the repo: ~50 MB of binary blobs in git history, breaks pebble.nix coupling, gets stale.
+- Use `--option extra-substituters` flags on every nix invocation: same trusted-users restriction applies; doesn't help.
+- nix-ld + downloaded ARM binaries instead of pebble.nix: would replace one NixOS-specific config requirement with another.
+
 ## 2026-05-12 — Switched to hybrid pebble-tool: uv install + pebble.nix binaries (superseded above)
 
 **Decision:** Bypass `pebbleEnv` and assemble `mkShell` directly. Install `pebble-tool` via `uv tool install pebble-tool` (canonical upstream method per [developer.repebble.com/sdk](https://developer.repebble.com/sdk)). Use pebble.nix's `arm-embedded-toolchain`, `pebble-qemu`, and `pebble-toolchain-bin` as the actual binaries pebble-tool shells out to, wiring them via `PEBBLE_EXTRA_PATH` and `PEBBLE_QEMU_PATH`.

@@ -134,29 +134,61 @@
 
           shellHook = ''
             # uv tool installs land in ~/.local/bin by default; put it on PATH
-            # so the user picks up `pebble` after `uv tool install pebble-tool`.
+            # so freshly-installed pebble-tool is visible.
             export PATH="$HOME/.local/bin:$PATH"
 
+            # === Idempotent first-run bootstrap ===
+            # Set OPENPEBBLERUN_SKIP_SETUP=1 to opt out (CI, debugging,
+            # replicating bare upstream behavior).
+            if [ -z "$OPENPEBBLERUN_SKIP_SETUP" ]; then
+              if ! command -v pebble >/dev/null 2>&1; then
+                echo "→ Bootstrapping pebble-tool v5.0.35+ via uv → ~/.local/bin"
+                if uv tool install pebble-tool --python 3.13; then
+                  # Re-evaluate PATH so the new shim is visible to the
+                  # SDK check below.
+                  hash -r 2>/dev/null || true
+                else
+                  echo "  ✗ uv tool install failed. Run manually:"
+                  echo "      uv tool install pebble-tool --python 3.13"
+                fi
+              fi
+              if command -v pebble >/dev/null 2>&1 \
+                && [ ! -d "$HOME/.pebble-sdk/SDKs" \
+                     -o -z "$(ls -A "$HOME/.pebble-sdk/SDKs" 2>/dev/null)" ]; then
+                echo "→ Installing Pebble SDK (latest)"
+                echo "  By proceeding you accept the Pebble TOS:"
+                echo "    https://developer.rebble.io/developer.getpebble.com/legal/terms-of-use/"
+                if ! pebble sdk install latest; then
+                  echo "  ✗ pebble sdk install failed. Run manually:"
+                  echo "      pebble sdk install latest"
+                fi
+              fi
+            fi
+
+            # === Status line ===
             echo "OpenPebbleRun dev shell"
-            echo "  Android SDK: $ANDROID_HOME"
-            echo "  JDK:         $JAVA_HOME"
             if command -v pebble >/dev/null 2>&1; then
-              echo "  Pebble:      $(pebble --version 2>&1 | head -1)"
+              echo "  Pebble:    $(pebble --version 2>&1 | head -1)"
             else
-              echo ""
-              echo "  pebble-tool not installed. One-time setup (per machine):"
-              echo "      uv tool install pebble-tool --python 3.13"
-              echo "      pebble sdk install latest"
-              echo ""
-              echo "  ARM toolchain + qemu are already on PEBBLE_EXTRA_PATH from"
-              echo "  this shell, so the broken binaries that \`pebble sdk install\`"
-              echo "  downloads to ~/.pebble-sdk are ignored at build time."
+              echo "  Pebble:    NOT INSTALLED (run \`make pebble-setup\`)"
             fi
+            if [ -d "$HOME/.pebble-sdk/SDKs" ] \
+               && [ -n "$(ls -A "$HOME/.pebble-sdk/SDKs" 2>/dev/null)" ]; then
+              echo "  SDK:       ✓ $(ls "$HOME/.pebble-sdk/SDKs" | head -1)"
+            else
+              echo "  SDK:       ✗ (run \`make pebble-setup\`)"
+            fi
+            echo "  Android:   $ANDROID_HOME"
+            echo "  JDK:       $JAVA_HOME"
             if [ -n "$PEBBLE_PHONE" ]; then
-              echo "  PEBBLE_PHONE=$PEBBLE_PHONE"
+              echo "  Phone IP:  $PEBBLE_PHONE"
             else
-              echo "  PEBBLE_PHONE not set — \`pebble install --phone <ip>\` needs an IP."
+              echo "  Phone IP:  (unset — \`PEBBLE_PHONE=<ip> nix develop\` or set per-cmd)"
             fi
+            # If arm-embedded-toolchain just rebuilt from source, the user
+            # missed the cachix. We can't detect that here reliably, so just
+            # surface the README pointer once per shell.
+            echo "  Cache:     pebble.cachix.org (NixOS: see README §Cachix)"
           '';
         };
       });
