@@ -20,7 +20,12 @@
         # androidenv assembles a usable SDK derivation from declared components.
         androidComposition = pkgs.androidenv.composeAndroidPackages {
           platformVersions = [ "35" "34" ];
-          buildToolsVersions = [ "35.0.0" ];
+          # 35.0.0 is what AGP 8.7's `compileSdk = 35` consumes. 34.0.0 must
+          # also be present: something in the AGP 8.7 toolchain or a transitive
+          # dep pulls it in, and AGP's auto-install logic fails against the
+          # read-only nix store. Pre-providing both keeps gradle happy without
+          # any writes to /nix/store.
+          buildToolsVersions = [ "35.0.0" "34.0.0" ];
           includeNDK = false;
           # cmdline-tools is required for sdkmanager/avdmanager.
           cmdLineToolsVersion = "11.0";
