@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         Permissions (spec §9).
@@ -69,6 +70,27 @@
             android:name=".DashboardActivity"
             android:exported="true"
             android:label="@string/dashboard_label" />
+
+        <!--
+            PebbleKitAndroid2 bound service. Spec §3, §5.1.
+
+            The Pebble companion app on the phone (`coredevices.coreapp` ≥ 1.0.7.7)
+            binds to this service when our watchapp opens. Service self-terminates
+            a few seconds after the last watchapp closes (per library docs).
+
+            android:exported="true" with an intent-filter is required for the
+            Pebble companion app to resolve us; `tools:ignore="ExportedService"`
+            suppresses the lint warning since the access control is enforced by
+            the library's [PebbleAndroidAppPicker] (per-package allowlist).
+        -->
+        <service
+            android:name=".pebble.PebbleListenerService"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH" />
+            </intent-filter>
+        </service>
 
     </application>
 

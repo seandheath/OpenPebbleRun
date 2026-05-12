@@ -305,7 +305,7 @@ Pebble Appstore (`apps.repebble.com`). Submit `.pbw` via `dev-portal.rebble.io` 
 
 **Secondary: F-Droid official**. Submit metadata MR to `gitlab.com/fdroid/fdroiddata`. **Reproducible builds not required.**
 
-**Risk**: PebbleKitAndroid2 is distributed via JitPack. JitPack is not on F-Droid's trusted Maven list. May need to vendor the library or wait for Maven Central publication for F-Droid official inclusion. IzzyOnDroid has no such restriction.
+PebbleKitAndroid2 publishes to **Maven Central** as of v1.0.0 (April 2026; see `pebble-dev/PebbleKitAndroid2/.github/workflows/publish.yml`). Coordinate: `io.rebble.pebblekit2:client`. The earlier draft of this spec warned about JitPack-only distribution; that's no longer the case and F-Droid official inclusion is not blocked on the dependency side. Reproducible builds for the companion app itself remain to be evaluated separately.
 
 ### 10.3 License
 
@@ -325,7 +325,7 @@ Each: `README.md`, `LICENSE`, one-line privacy statement.
 - Externally-started OpenTracks recordings cannot be detected. Concurrent start behavior is whatever OpenTracks does.
 - HR from watch HRM is displayed only, not in GPX. HR from a BLE strap paired to OpenTracks is recorded in GPX and auto-detected by the companion (watch HRM disables itself when external HR arrives).
 - Public API enablement is not auto-verified.
-- PebbleKitAndroid2 is alpha (v0.1.0). Pin the version. Expect breakage as it evolves.
+- PebbleKitAndroid2 v1.1.0 (April 2026) is the current pinned version. Pin in `build.gradle.kts`; expect API drift across minor versions.
 - Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware as of May 2026. Buttons-only UI.
 
 ## 12. Testing

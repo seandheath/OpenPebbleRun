@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">OpenPebbleRun</string>
     <string name="dashboard_label">OpenPebbleRun Run Stats</string>
+    <string name="dashboard_recording_message">Recording…\n\nLook at your watch for stats.</string>
 
     <!-- First-launch instructions (spec §5.2.1) -->
     <string name="first_launch_intro">OpenPebbleRun needs OpenTracks with Public API enabled.</string>
@@ -18,9 +19,4 @@
     <string name="home_status_ok">✓</string>
     <string name="home_status_missing">✗</string>
     <string name="home_prompt">Start runs from your watch.</string>
-
-    <!-- Debug controls (removed in step 5 when CMD_START is wired) -->
-    <string name="debug_section_title">Debug</string>
-    <string name="debug_start_test_run">Start test run</string>
-    <string name="debug_stop_test_run">Stop test run</string>
 </resources>

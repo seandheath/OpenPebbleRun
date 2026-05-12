@@ -16,6 +16,15 @@
     },
     "capabilities": ["health"],
     "messageKeys": [],
+    "companionApp": {
+      "android": {
+        "url": "https://codeberg.org/sheath/openpebblerun",
+        "apps": [
+          { "package": "run.openpebble.companion" },
+          { "package": "run.openpebble.companion.debug" }
+        ]
+      }
+    },
     "resources": {
       "media": []
     }

@@ -63,6 +63,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    // PebbleKitAndroid2 dependency is deliberately omitted at the skeleton stage.
-    // It is wired in step 5 (end-to-end run start/stop). See docs/log.md TODOs.
+    // === PebbleKitAndroid2 (spec §3, §5.1, §10.2) ===
+    // Published to Maven Central as of v1.0.0 (spec §10.2's JitPack/F-Droid risk
+    // note is obsolete — see docs/log.md). Pin to 1.1.0 per spec §11 guidance.
+    implementation("io.rebble.pebblekit2:client:1.1.0")
 }

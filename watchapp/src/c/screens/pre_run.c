@@ -1,19 +1,16 @@
 #include "pre_run.h"
+#include "active_run.h"
 #include "../app_message.h"
 
 /*
  * Pre-run screen state machine. Spec §4.2.1.
  *
  *   IDLE  ──Select─→  STARTING
- *   STARTING ──RUN_STARTED─→  ACTIVE (stub window pushed)
+ *   STARTING ──RUN_STARTED─→  active_run_show()
  *   STARTING ──15s timeout─→ ERROR
  *   STARTING ──RUN_FAILED─→  ERROR
  *   ERROR    ──5s timeout─→  IDLE
  *   ERROR    ──any button─→  IDLE   (spec also allows immediate dismiss)
- *
- * Active-run window is intentionally a placeholder at the skeleton stage:
- * spec §14 step 6 builds the real 5-metric layout. Pushing _any_ window proves
- * the state-machine transition works.
  */
 
 typedef enum {
@@ -23,14 +20,10 @@ typedef enum {
 } PreRunState;
 
 static Window *s_window = NULL;
-static Window *s_active_stub_window = NULL;
 static TextLayer *s_title_layer = NULL;
 static TextLayer *s_prompt_layer = NULL;
 static AppTimer *s_timeout_timer = NULL;
 static PreRunState s_state = PRE_RUN_IDLE;
-
-// Active-run stub window content.
-static TextLayer *s_active_stub_text = NULL;
 
 // Stop timeout timer if running.
 static void cancel_timeout(void) {
@@ -64,9 +57,6 @@ static void enter_idle(void) {
     s_state = PRE_RUN_IDLE;
     render();
 }
-
-// Forward declaration: active-run stub window setup.
-static void active_stub_push(void);
 
 // ===== Timeout handlers =====
 
@@ -102,13 +92,18 @@ static void inbox_handler(DictionaryIterator *iter) {
     if (dict_find(iter, KEY_RUN_STARTED)) {
         if (s_state == PRE_RUN_STARTING) {
             cancel_timeout();
-            active_stub_push();
+            // Reset pre-run UI to IDLE state for when active-run pops back.
+            s_state = PRE_RUN_IDLE;
+            render();
+            // active_run_show installs its own inbox handler; we'll reinstall
+            // ours via pre_run_show() if/when the user starts another run.
+            active_run_show();
         }
     } else if (dict_find(iter, KEY_RUN_FAILED)) {
         if (s_state == PRE_RUN_STARTING) enter_error();
     }
-    // Other keys (metric updates) are ignored at the skeleton stage. Step 6
-    // will route them to the active-run window's handler instead.
+    // Metric keys (120/122/123/124) are routed to active_run's handler once
+    // active_run_show installs its own inbox handler. We ignore them here.
 }
 
 // ===== Button handlers =====
@@ -176,34 +171,11 @@ static void window_unload(Window *window) {
     if (s_prompt_layer) { text_layer_destroy(s_prompt_layer); s_prompt_layer = NULL; }
 }
 
-// ===== Active-run stub (replaced in step 6) =====
-
-static void active_stub_unload(Window *window) {
-    if (s_active_stub_text) {
-        text_layer_destroy(s_active_stub_text);
-        s_active_stub_text = NULL;
-    }
-}
-
-static void active_stub_load(Window *window) {
-    Layer *root = window_get_root_layer(window);
-    GRect bounds = layer_get_bounds(root);
-    s_active_stub_text = text_layer_create(GRect(0, bounds.size.h / 2 - 20, bounds.size.w, 40));
-    text_layer_set_font(s_active_stub_text, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
-    text_layer_set_text_alignment(s_active_stub_text, GTextAlignmentCenter);
-    text_layer_set_text(s_active_stub_text, "Active");
-    layer_add_child(root, text_layer_get_layer(s_active_stub_text));
-}
-
-static void active_stub_push(void) {
-    if (!s_active_stub_window) {
-        s_active_stub_window = window_create();
-        window_set_window_handlers(s_active_stub_window, (WindowHandlers){
-            .load = active_stub_load,
-            .unload = active_stub_unload,
-        });
-    }
-    window_stack_push(s_active_stub_window, true);
+// `appear` fires every time the window comes to the top of the stack — both
+// on initial push and when active_run pops back to us. Reinstall our inbox
+// handler here so we receive RUN_STARTED for a subsequent run.
+static void window_appear(Window *window) {
+    app_message_set_inbox_handler(inbox_handler);
 }
 
 // ===== Public API =====
@@ -212,21 +184,18 @@ void pre_run_show(void) {
     if (!s_window) {
         s_window = window_create();
         window_set_window_handlers(s_window, (WindowHandlers){
-            .load = window_load,
+            .load   = window_load,
             .unload = window_unload,
+            .appear = window_appear,
         });
         window_set_click_config_provider(s_window, click_config_provider);
     }
-    app_message_set_inbox_handler(inbox_handler);
     window_stack_push(s_window, true);
 }
 
 void pre_run_hide(void) {
     app_message_set_inbox_handler(NULL);
-    if (s_active_stub_window) {
-        window_destroy(s_active_stub_window);
-        s_active_stub_window = NULL;
-    }
+    active_run_hide();
     if (s_window) {
         window_destroy(s_window);
         s_window = NULL;
