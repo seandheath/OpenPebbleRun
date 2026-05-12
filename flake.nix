@@ -36,15 +36,18 @@
             # Android SDK + OpenJDK ship with non-free licenses.
             allowUnfree = true;
             android_sdk.accept_license = true;
-            # pebble.nix's older derivations still reference Python 2.7.
-            permittedInsecurePackages = [
-              "python-2.7.18.8"
-              "python-2.7.18.8-env"
-              "python-2.7.18.12"
-            ];
           };
-          overlays = [ pebble.overlays.default ];
         };
+
+        # Pull pebble.nix's binaries DIRECTLY from its package outputs, not via
+        # overlay. Reason: applying the overlay rebuilds these derivations
+        # against our own nixpkgs, producing different store-path hashes than
+        # what pebble.nix's CI uploaded to pebble.cachix.org → forced source
+        # build of arm-embedded-toolchain (which fails because its vendored
+        # GMP 4.3.2 won't compile against modern host GCC). Pulling from
+        # pebble.packages.${system}.* uses pebble.nix's own pinned nixpkgs, so
+        # the hashes match the cache.
+        pebblePkgs = pebble.packages.${system};
 
         # Android SDK components for the companion app (spec §5.1: minSdk 26,
         # targetSdk 35). 35.0.0 is what AGP 8.7 + compileSdk = 35 actually uses;
@@ -63,19 +66,13 @@
         devShells.default = pkgs.mkShell {
           name = "openpebblerun-dev";
 
-          packages = with pkgs; [
+          packages = (with pkgs; [
             # === Watchapp ===
             # `pebble-tool` itself is installed by the user via `uv tool install
             # pebble-tool` — see shellHook. We provide everything else it shells
-            # out to: ARM compiler, qemu, JS tooling, and the misc binaries
-            # pebble-tool can call (pdc tools, etc.).
+            # out to: nodejs (for pypkjs), ARM compiler, qemu, pdc tools.
             uv                          # canonical pebble-tool installer
             nodejs                      # required by pebble-tool + pypkjs
-            arm-embedded-toolchain      # from pebble.nix overlay
-            pebble-qemu                 # from pebble.nix overlay
-            pebble-toolchain-bin        # from pebble.nix overlay
-            pdc_tool
-            pdc-sequencer
 
             # === Companion (Android Kotlin) ===
             jdk17
@@ -88,6 +85,13 @@
             ripgrep
             gnumake
             curl
+          ]) ++ [
+            # === Pebble binaries (from pebble.cachix.org via pebble.nix CI) ===
+            pebblePkgs.arm-embedded-toolchain
+            pebblePkgs.pebble-qemu
+            pebblePkgs.pebble-toolchain-bin
+            pebblePkgs.pdc_tool
+            pebblePkgs.pdc-sequencer
           ];
 
           # === Android env ===
@@ -100,7 +104,7 @@
           # pebble-tool 5.0.35 reads PEBBLE_QEMU_PATH to locate qemu-pebble
           # (`pebble_tool/sdk/emulator.py:40`), falling back to whatever is on
           # PATH. We point it directly at the nix-patched binary.
-          PEBBLE_QEMU_PATH = "${pkgs.pebble-qemu}/bin/qemu-pebble";
+          PEBBLE_QEMU_PATH = "${pebblePkgs.pebble-qemu}/bin/qemu-pebble";
 
           # pebble-tool prepends PEBBLE_EXTRA_PATH to its own PATH *after* the
           # ~/.pebble-sdk/SDKs/<v>/toolchain/arm-none-eabi/bin entry it adds
@@ -109,12 +113,12 @@
           # what we want: the SDK install drops glibc-linked binaries that
           # NixOS can't execute; our nix-provided toolchain wins because it
           # sits earlier on PATH.
-          PEBBLE_EXTRA_PATH = pkgs.lib.makeBinPath (with pkgs; [
-            arm-embedded-toolchain
-            pebble-toolchain-bin
-            pdc_tool
-            pdc-sequencer
-          ]);
+          PEBBLE_EXTRA_PATH = pkgs.lib.makeBinPath [
+            pebblePkgs.arm-embedded-toolchain
+            pebblePkgs.pebble-toolchain-bin
+            pebblePkgs.pdc_tool
+            pebblePkgs.pdc-sequencer
+          ];
 
           # pebble-tool's Python deps (libpebble2, freetype-py, pypkjs's JS
           # bridge, …) load native libraries at runtime via ctypes. NixOS
