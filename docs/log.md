@@ -66,6 +66,16 @@ quick.
 **Rationale:** Spec §4.1 targets the `emery` platform (Pebble Time 2) which is only supported by the CoreDevices pebble-tool fork. pebble.nix already wraps both upstream and CoreDevices toolchains and ships a binary cache (`cachix use pebble`), so users skip a ~30-minute toolchain rebuild. Single composed dev shell beats two-shell juggling.
 **Alternatives considered:** Vendor the Pebble SDK ourselves (rejected — that's pebble.nix's job and they do it better). Manual install instructions in README (rejected — workflow friction discouraged contributors).
 
+## 2026-05-12 — Switched to hybrid pebble-tool: uv install + pebble.nix binaries (superseded above)
+
+**Decision:** Bypass `pebbleEnv` and assemble `mkShell` directly. Install `pebble-tool` via `uv tool install pebble-tool` (canonical upstream method per [developer.repebble.com/sdk](https://developer.repebble.com/sdk)). Use pebble.nix's `arm-embedded-toolchain`, `pebble-qemu`, and `pebble-toolchain-bin` as the actual binaries pebble-tool shells out to, wiring them via `PEBBLE_EXTRA_PATH` and `PEBBLE_QEMU_PATH`.
+**Rationale:** pebble.nix's `coredevices.pebble-tool` is pinned at v5.0.5; the current CoreDevices SDK manifests require pebble-tool ≥ 5.0.32 (`This SDK has the following unmet requirements: pebble-tool>=5.0.32` on first `pebble build`). Writing and maintaining a custom Nix derivation that tracks pebble-tool's hatchling-based 5.0.35+ pyproject was tried briefly and rejected — that's ~90 lines of Nix to own and re-bump on every upstream release. The hybrid approach lets `uv` track upstream automatically while pebble.nix continues to do the hard NixOS work of patching the downloaded ARM binaries.
+**How it works:** `pebble sdk install latest` still drops glibc-linked binaries under `~/.pebble-sdk/SDKs/<v>/toolchain/arm-none-eabi`, but pebble-tool prepends `PEBBLE_EXTRA_PATH` to `PATH` *after* that directory (see `pebble_tool/sdk/__init__.py:64-78` in v5.0.35), so the nix-patched binaries on `PEBBLE_EXTRA_PATH` take precedence at build time. The downloaded toolchain is effectively dead weight on disk.
+**Alternatives considered:**
+- Custom derivation forking `coredevices/pebble-tool` (rejected — see above).
+- Pure-upstream install (rejected — `pebble sdk install` drops binaries that won't execute on NixOS without nix-ld; can't assume contributors have that set up).
+- Pin an older SDK whose manifest accepts pebble-tool 5.0.5 (rejected — SDK and tool versions move together; pinning either ages the project out of upstream's support window).
+
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
