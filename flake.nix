@@ -1,6 +1,16 @@
 {
   description = "OpenPebbleRun — Pebble Time 2 run-tracking watchapp + Android companion for OpenTracks";
 
+  # Self-advertise the pebble.nix cachix. The first `nix develop` will prompt
+  # the user to trust it. Without the cache, `arm-embedded-toolchain-4.7`
+  # tries to build from source — GMP 4.3.2 + modern host GCC fails.
+  nixConfig = {
+    extra-substituters = [ "https://pebble.cachix.org" ];
+    extra-trusted-public-keys = [
+      "pebble.cachix.org-1:1SYzkyMyCNYELT9CCtBmnq+S6/QfWNFq8ojQzeMmCp4="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";

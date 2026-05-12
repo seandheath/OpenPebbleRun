@@ -20,11 +20,15 @@ No network. No analytics. No tracking beyond what OpenTracks itself records.
 ## Build
 
 ```sh
-# Optional: prime the pebble.nix binary cache (saves a long ARM-toolchain
-# build on first shell entry).
-cachix use pebble
-
 nix develop                   # JDK 17, Android SDK, gradle, uv, ARM toolchain, qemu
+```
+
+The flake self-advertises the `pebble.cachix.org` binary cache (via `nixConfig`); the first `nix develop` prompts you to trust it. **Accept** — the GCC 4.7 ARM toolchain doesn't build from source against modern GMP. If you decline or run in a context that ignores `nixConfig`, fall back to:
+
+```sh
+nix develop \
+  --option extra-substituters https://pebble.cachix.org \
+  --option extra-trusted-public-keys 'pebble.cachix.org-1:1SYzkyMyCNYELT9CCtBmnq+S6/QfWNFq8ojQzeMmCp4='
 ```
 
 ### One-time pebble-tool setup
