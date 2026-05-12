@@ -20,12 +20,25 @@ No network. No analytics. No tracking beyond what OpenTracks itself records.
 ## Build
 
 ```sh
-nix develop          # enters dev shell (JDK, Android SDK, gradle, pebble tools if available)
+nix develop          # JDK 17, Android SDK, gradle + pebble-tool/qemu/ARM toolchain
 make build           # delegates to companion/ and watchapp/
 make test            # delegates to both
 ```
 
-The Pebble SDK is not currently packaged in nixpkgs. If `pebble` is not on `PATH`, watchapp targets print a skip message and exit 0 — install the SDK manually from <https://help.rebble.io/sdk/> for watchapp work.
+The Pebble SDK comes from [pebble.nix](https://github.com/pebble-dev/pebble.nix). To skip rebuilding the toolchain locally, opt in to the project's binary cache once:
+
+```sh
+cachix use pebble    # non-NixOS
+# on NixOS: add `pebble.cachix.org` to nix.settings.substituters
+```
+
+For watchapp installs, set the Pebble Developer Connection IP before entering the shell or per-invocation:
+
+```sh
+PEBBLE_PHONE=192.168.1.42 nix develop
+# then inside the shell:
+cd watchapp && pebble install --phone "$PEBBLE_PHONE"
+```
 
 ## License
 

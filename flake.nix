@@ -4,9 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    # Pebble SDK + ARM toolchain + emulator. See https://github.com/pebble-dev/pebble.nix
+    # Recommended cachix setup (skip rebuilding the toolchain locally):
+    #     cachix use pebble
+    pebble.url = "github:pebble-dev/pebble.nix";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, pebble }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -16,41 +21,44 @@
           config.android_sdk.accept_license = true;
         };
 
-        # Android SDK components needed for the companion app (spec §5.1: minSdk 26, targetSdk 35).
-        # androidenv assembles a usable SDK derivation from declared components.
+        # Android SDK components for the companion app (spec §5.1: minSdk 26,
+        # targetSdk 35). 35.0.0 build-tools is what AGP 8.7 + compileSdk=35
+        # actually uses; 34.0.0 is included because the AGP toolchain still
+        # references it from somewhere and tries to auto-install if missing,
+        # which fails against the read-only nix store.
         androidComposition = pkgs.androidenv.composeAndroidPackages {
           platformVersions = [ "35" "34" ];
-          # 35.0.0 is what AGP 8.7's `compileSdk = 35` consumes. 34.0.0 must
-          # also be present: something in the AGP 8.7 toolchain or a transitive
-          # dep pulls it in, and AGP's auto-install logic fails against the
-          # read-only nix store. Pre-providing both keeps gradle happy without
-          # any writes to /nix/store.
           buildToolsVersions = [ "35.0.0" "34.0.0" ];
           includeNDK = false;
-          # cmdline-tools is required for sdkmanager/avdmanager.
           cmdLineToolsVersion = "11.0";
-          # Platform-tools provides adb.
           includeSystemImages = false;
         };
 
         androidSdk = androidComposition.androidsdk;
       in {
-        devShells.default = pkgs.mkShell {
-          name = "openpebblerun-dev";
+        # Compose pebbleEnv (pebble-tool, ARM toolchain, qemu, nodejs) with the
+        # Android tooling needed for the companion. `pebbleEnv` forwards any
+        # extra attrs straight through to mkShell, so env vars and shellHook
+        # pass through cleanly.
+        #
+        # `withCoreDevices = true` swaps in the CoreDevices pebble-tool fork.
+        # Spec §4.1 targets the `emery` platform (Pebble Time 2) which only the
+        # CoreDevices toolchain supports.
+        devShells.default = pebble.pebbleEnv.${system} {
+          withCoreDevices = true;
 
-          buildInputs = with pkgs; [
+          # Pebble Developer Connection IP. Override at the shell:
+          #     PEBBLE_PHONE=192.168.1.42 nix develop
+          # or set per-user in direnv.
+          devServerIP = "";
+
+          # Additional packages for the companion build + general dev.
+          packages = with pkgs; [
             # === Companion (Android Kotlin) ===
             jdk17
             gradle
             androidSdk
             kotlin
-
-            # === Watchapp (Pebble C) ===
-            # Pebble SDK is not packaged in nixpkgs. Users must install it manually
-            # from https://help.rebble.io/sdk/ and ensure `pebble` is on PATH.
-            # Python 2.7 is required by the legacy Pebble SDK toolchain.
-            # We provide python3 here for general scripting; the SDK ships its own venv.
-            python3
 
             # === General ===
             git
@@ -59,21 +67,19 @@
             curl
           ];
 
-          # Tell Gradle where to find the Android SDK.
           ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
           ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
-
-          # JDK for Gradle.
           JAVA_HOME = "${pkgs.jdk17}/lib/openjdk";
 
           shellHook = ''
             echo "OpenPebbleRun dev shell"
+            echo "  Pebble:      $(command -v pebble || echo MISSING)"
             echo "  Android SDK: $ANDROID_HOME"
             echo "  JDK:         $JAVA_HOME"
-            if command -v pebble >/dev/null 2>&1; then
-              echo "  Pebble SDK:  $(command -v pebble)"
+            if [ -n "$PEBBLE_PHONE" ]; then
+              echo "  PEBBLE_PHONE=$PEBBLE_PHONE"
             else
-              echo "  Pebble SDK:  NOT on PATH — install from https://help.rebble.io/sdk/ for watchapp builds."
+              echo "  PEBBLE_PHONE not set — \`pebble install --phone <ip>\` needs an IP."
             fi
           '';
         };
