@@ -1,0 +1,36 @@
+# Nix
+result
+result-*
+.direnv/
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.swp
+*~
+
+# === Android (companion/) ===
+companion/.gradle/
+companion/build/
+companion/app/build/
+companion/local.properties
+companion/captures/
+companion/.cxx/
+companion/.kotlin/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+keystore.jks
+keystore.properties
+*.keystore
+
+# === Pebble (watchapp/) ===
+watchapp/build/
+watchapp/.pebble-cache/
+watchapp/*.pbw
+watchapp/resources/src/resource_ids.auto.h
+watchapp/src/resource_ids.auto.h

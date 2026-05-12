@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        Permissions (spec §9).
+        BLUETOOTH_CONNECT is for PebbleKitAndroid2 (Android 12+). Not used yet at
+        skeleton stage, but declared so the runtime-prompt flow can be exercised
+        as soon as PebbleKit wiring lands in step 5.
+
+        Deliberately NOT requested: location, storage, notifications, foreground
+        service, internet. No QUERY_ALL_PACKAGES.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+        Package visibility on Android 11+ (API 30+) requires explicit declarations
+        for any package we resolve or any Intent action we send. Spec §9.
+    -->
+    <queries>
+        <!-- OpenTracks variants (spec §5.4 probe order). -->
+        <package android:name="de.dennisguse.opentracks" />
+        <package android:name="de.dennisguse.opentracks.playstore" />
+        <package android:name="de.dennisguse.opentracks.debug" />
+        <package android:name="de.dennisguse.opentracks.nightly" />
+
+        <!--
+            PebbleKitAndroid2 picker (spec §9): on Android 11+ the library
+            enumerates components handling this action to find the Pebble
+            companion app (`coredevices.coreapp`, min v1.0.7.7).
+        -->
+        <intent>
+            <action android:name="io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH" />
+        </intent>
+
+        <!-- OpenTracks Public API Start/Stop intent actions, used for resolveActivity probes. -->
+        <intent>
+            <action android:name="de.dennisguse.opentracks.publicapi.StartRecording" />
+        </intent>
+        <intent>
+            <action android:name="de.dennisguse.opentracks.publicapi.StopRecording" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_directions"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.OpenPebbleRun">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            DashboardActivity is the target OpenTracks invokes after StartRecording
+            via STATS_TARGET_PACKAGE/STATS_TARGET_CLASS extras (spec §6.1, §6.2).
+            Must be exported so OpenTracks can launch it with the Track + TrackPoints
+            content URIs and FLAG_GRANT_READ_URI_PERMISSION.
+
+            Phase B: declared but a stub. Phase C: receives + logs the URIs.
+        -->
+        <activity
+            android:name=".DashboardActivity"
+            android:exported="true"
+            android:label="@string/dashboard_label" />
+
+    </application>
+
+</manifest>

@@ -1,0 +1,23 @@
+{
+  "name": "openpebblerun",
+  "author": "Sean Heath",
+  "version": "0.1.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "OpenPebbleRun",
+    "uuid": "e8e7473e-eeb9-48d3-a57c-fc2af318db5d",
+    "sdkVersion": "3",
+    "enableMultiJS": false,
+    "targetPlatforms": ["emery"],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": ["health"],
+    "messageKeys": [],
+    "resources": {
+      "media": []
+    }
+  }
+}

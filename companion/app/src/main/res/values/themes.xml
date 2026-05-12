@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Material3 theme. We use Compose for UI so the theme is mostly a
+        placeholder for the system bars / splash. Compose handles colors.
+    -->
+    <style name="Theme.OpenPebbleRun" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
