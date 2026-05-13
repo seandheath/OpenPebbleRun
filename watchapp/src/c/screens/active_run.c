@@ -59,6 +59,36 @@ static uint64_t s_last_inbox_ms = 0;
 static bool     s_dimmed = false;
 static AppTimer *s_stale_timer = NULL;
 
+// Locally-ticked elapsed time. Companion's Track.movingtime updates sparsely
+// (OpenTracks's dashboard ContentObserver only fires on track-row changes —
+// often 25+ seconds apart), so the watch drives its own 1 Hz clock and snaps
+// to the companion's authoritative value on every KEY_TIME receipt. This
+// matches what OpenTracks's own TrackRecordingActivity does internally.
+static uint32_t s_elapsed_sec = 0;
+
+// ===== Heart-rate sampling =====
+//
+// Spec §4.3: internal HRM at 1 Hz, subscribe to HealthEventHeartRateUpdate,
+// display the latest value. Sampling lifecycle is bound to the active-run
+// screen (rather than the whole app lifetime) to avoid battery drain on the
+// pre-run screen where HR isn't displayed. main.c also calls
+// health_service_set_heart_rate_sample_period(0) on app exit defensively
+// (idempotent).
+static void render_hr(HealthValue bpm) {
+    if (bpm <= 0) {
+        snprintf(s_hr_buf, sizeof(s_hr_buf), "---");
+    } else {
+        snprintf(s_hr_buf, sizeof(s_hr_buf), "%lu", (unsigned long)bpm);
+    }
+    text_layer_set_text(s_hr_value, s_hr_buf);
+}
+
+static void health_event_handler(HealthEventType event, void *context) {
+    if (event != HealthEventHeartRateUpdate) return;
+    HealthValue bpm = health_service_peek_current_value(HealthMetricHeartRateBPM);
+    render_hr(bpm);
+}
+
 // ===== Formatting helpers =====
 
 // Pace seconds-per-mile → "M:SS" or "MM:SS". Spec §5.3: capped at 3600 (60:00).
@@ -123,6 +153,13 @@ static void stale_tick_cb(void *ctx) {
     } else {
         if (s_dimmed)  { s_dimmed = false; apply_color(false); }
     }
+
+    // Local 1 Hz time advance. Independent of phone reachability — we keep
+    // counting and let the companion correct us when its next KEY_TIME lands.
+    s_elapsed_sec += 1;
+    format_time(s_elapsed_sec, s_time_buf, sizeof(s_time_buf));
+    text_layer_set_text(s_time_value, s_time_buf);
+
     schedule_stale_tick();
 }
 
@@ -145,7 +182,12 @@ static void inbox_handler(DictionaryIterator *iter) {
     }
     t = dict_find(iter, KEY_TIME);
     if (t) {
-        format_time(t->value->uint32, s_time_buf, sizeof(s_time_buf));
+        // Snap our local 1 Hz counter to the companion's authoritative value.
+        // Between KEY_TIME messages, stale_tick_cb advances s_elapsed_sec by 1
+        // each second so the field never freezes (companion updates can be 25+ s
+        // apart depending on OpenTracks's notifyChange cadence).
+        s_elapsed_sec = t->value->uint32;
+        format_time(s_elapsed_sec, s_time_buf, sizeof(s_time_buf));
         text_layer_set_text(s_time_value, s_time_buf);
         got_metric = true;
     }
@@ -265,10 +307,26 @@ static void window_load(Window *window) {
 
     s_last_inbox_ms = 0;
     s_dimmed = false;
+    s_elapsed_sec = 0;
     schedule_stale_tick();
+
+    // Enable internal HRM at 0.2 Hz (one sample every 5 s) and subscribe to
+    // updates. The 5 s period matches the companion's OpenTracks poll cadence,
+    // so all of the active-run display metrics refresh on the same beat. Render
+    // whatever value is already cached (often non-zero if the user's worn the
+    // watch for a while) so the field doesn't sit on "---" waiting for the
+    // first HealthEventHeartRateUpdate.
+    health_service_set_heart_rate_sample_period(5);
+    health_service_events_subscribe(health_event_handler, NULL);
+    render_hr(health_service_peek_current_value(HealthMetricHeartRateBPM));
 }
 
 static void window_unload(Window *window) {
+    // Stop HR sampling first so the sensor doesn't keep draining after we exit.
+    // main.c's deinit also calls set_period(0); duplicate is harmless.
+    health_service_events_unsubscribe();
+    health_service_set_heart_rate_sample_period(0);
+
     if (s_stale_timer) { app_timer_cancel(s_stale_timer); s_stale_timer = NULL; }
 
     text_layer_destroy(s_hr_label);   text_layer_destroy(s_hr_value);
