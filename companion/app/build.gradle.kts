@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -41,16 +43,20 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
     }
 
     // Kotlin source dirs (we use src/main/kotlin instead of src/main/java).
     sourceSets["main"].kotlin.srcDirs("src/main/kotlin")
+}
+
+// Kotlin 2.3 removed the legacy `android { kotlinOptions { … } }` DSL.
+// Use the top-level `kotlin { compilerOptions { … } }` block instead.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
