@@ -89,13 +89,20 @@
             ripgrep
             gnumake
             curl
+            # === ARM cross-compiler ===
+            # pebble.nix's `arm-embedded-toolchain` is GCC 4.7.4 (2014), too
+            # old for the current CoreDevices SDK 4.9.169 which pairs with
+            # GCC 14.2.1 and uses warning flags like `-Werror=format-truncation`
+            # that GCC 4.7 doesn't recognise. Use the modern toolchain from
+            # nixpkgs (currently 15.2.rel1) — the Pebble OS app ABI is plain
+            # ARMv7-M EABI; binary compat is fine across modern GCC versions.
+            gcc-arm-embedded
           ]) ++ [
-            # === Pebble binaries (from pebble.cachix.org via pebble.nix CI) ===
-            pebblePkgs.arm-embedded-toolchain
-            pebblePkgs.pebble-qemu
-            pebblePkgs.pebble-toolchain-bin
-            pebblePkgs.pdc_tool
-            pebblePkgs.pdc-sequencer
+            # === Pebble-specific binaries (from pebble.cachix.org via pebble.nix CI) ===
+            pebblePkgs.pebble-qemu      # emulator
+            pebblePkgs.pdc_tool         # Pebble draw-command tool
+            pebblePkgs.pdc-sequencer    # animation sequencing
+            # pebble-toolchain-bin dropped: also GCC 4.7 era, superseded.
           ];
 
           # === Android env ===
@@ -118,8 +125,7 @@
           # NixOS can't execute; our nix-provided toolchain wins because it
           # sits earlier on PATH.
           PEBBLE_EXTRA_PATH = pkgs.lib.makeBinPath [
-            pebblePkgs.arm-embedded-toolchain
-            pebblePkgs.pebble-toolchain-bin
+            pkgs.gcc-arm-embedded
             pebblePkgs.pdc_tool
             pebblePkgs.pdc-sequencer
           ];
