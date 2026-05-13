@@ -135,7 +135,8 @@ AppMessage delivers one message at a time and ACKs each. Throttle sends to one p
 - **minSdk**: 26 (Android 8.0)
 - **targetSdk**: 35
 - **Language**: Kotlin
-- **Background**: PebbleKitAndroid2 bound service only. No foreground service. No `POST_NOTIFICATIONS`.
+- **Background**: PebbleKitAndroid2 bound service. The companion app prompts the user once at first launch to **pair the Pebble via Android's CompanionDeviceManager (CDM)**; that association grants `REQUEST_COMPANION_RUN_IN_BACKGROUND` (Background Activity Launch exemption) and `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` (allows `Service.startForeground()` from a background callback). Without the CDM association Android 12+ silently `BAL_BLOCK`s the OpenTracks publicapi dispatch and Android 14+ refuses the foreground-service promotion — the watch can't actually start runs. With the association in place, both work. (Same mechanism Gadgetbridge uses for Pebble.)
+- **Foreground service while recording**: between CMD_START and CMD_STOP the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible — and the watch-driven flow continues to work.
 
 ### 5.2 Screens
 
@@ -148,6 +149,7 @@ One screen, shown only if Public API check fails. No multi-step wizard.
   1. Install OpenTracks (button → IzzyOnDroid / F-Droid link)
   2. In OpenTracks: Settings → Public API → enable both **Public API** and **Automatic data transfer** (the dashboard-callback gate; recording starts without it but `DashboardActivity` never fires)
   3. Pair Pebble in the official Pebble app
+  4. After install, tap "Pair Pebble for background access" on the Home screen so the watch can start runs while the companion is closed (one-time CDM system dialog).
 - Button: "Open OpenTracks settings" (Intent to OpenTracks; falls back to launcher Intent)
 - Button: "Done"
 
@@ -157,8 +159,10 @@ Steady-state. Shown after first-launch.
 
 - Pebble: ✓/✗
 - OpenTracks: ✓ (variant name) / ✗
+- Background access: ✓ Paired / ✗ Not paired. When ✗, an outlined "Pair Pebble for background access" button below the status rows launches the CDM pairing system dialog.
 - Text: "Start runs from your watch."
 - No settings, no troubleshoot, no run history. (Use OpenTracks for history.)
+- While a run is active, an ongoing notification ("Recording — see your watch") is shown in the shade. Tapping it opens this Home screen.
 
 ### 5.3 Computed metrics
 
@@ -281,6 +285,11 @@ Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — the
 ### Companion
 
 - `BLUETOOTH_CONNECT` (runtime, API 31+) — for PebbleKit
+- `FOREGROUND_SERVICE` (Android 9+; normal permission) — for run-state foreground service (§5.1)
+- `FOREGROUND_SERVICE_CONNECTED_DEVICE` (API 34+; normal permission) — required to match the service's `foregroundServiceType="connectedDevice"` declaration
+- `POST_NOTIFICATIONS` (API 33+; runtime, requested at first launch) — for the recording notification posted while a run is active
+- `REQUEST_COMPANION_RUN_IN_BACKGROUND` (API 26+; normal; activated by CDM association) — BAL exemption for the listener service
+- `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` (API 30+; normal; activated by CDM association) — allows `Service.startForeground()` from a background callback
 - `<queries>` manifest block listing:
   - `de.dennisguse.opentracks` (and `.playstore`, `.debug`, `.nightly`)
   - Intent action `io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH` (required for PebbleKitAndroid2 picker on Android 11+)
@@ -288,7 +297,7 @@ Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — the
 
 ### Not requested
 
-- No location, storage, notifications, foreground service, or internet permissions
+- No location, storage, or internet permissions
 - No `QUERY_ALL_PACKAGES`
 
 ## 10. Distribution
@@ -326,6 +335,8 @@ Each: `README.md`, `LICENSE`, one-line privacy statement.
 - Public API enablement is not auto-verified.
 - PebbleKitAndroid2 v1.1.0 (April 2026) is the current pinned version. Pin in `build.gradle.kts`; expect API drift across minor versions.
 - Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware as of May 2026. Buttons-only UI.
+- An ongoing notification ("Recording — see your watch") is shown while a run is active and cannot be dismissed until you stop the run. Matches OpenTracks's own behaviour; users typically see both side-by-side during the same run.
+- Background watch control requires a one-time CompanionDeviceManager pairing in the companion app (system dialog). If the user dismisses it without pairing, runs can only be started while the companion is foreground — Home shows the Pair button until done.
 
 ## 12. Testing
 

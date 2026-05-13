@@ -1,17 +1,28 @@
 package run.openpebble.companion.pebble
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import io.rebble.pebblekit2.client.BasePebbleListenerService
 import io.rebble.pebblekit2.common.model.PebbleDictionary
 import io.rebble.pebblekit2.common.model.PebbleDictionaryItem
 import io.rebble.pebblekit2.common.model.ReceiveResult
 import io.rebble.pebblekit2.common.model.WatchIdentifier
 import kotlinx.coroutines.launch
+import run.openpebble.companion.MainActivity
+import run.openpebble.companion.R
+import run.openpebble.companion.cdm.CdmManager
 import run.openpebble.companion.metrics.TrackStats
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
@@ -103,8 +114,83 @@ class PebbleListenerService : BasePebbleListenerService() {
         Log.d(TAG, "PebbleListenerService onDestroy — stopping poll loop")
         mainHandler.removeCallbacks(pollRunnable)
         unregisterObserversIfAny()
+        // Defensive demote in case we're torn down mid-run. stopForeground is a
+        // no-op if we were never in foreground state — safe to call unconditionally.
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        else stopForeground(true)
         PebbleMessenger.close()
         super.onDestroy()
+    }
+
+    // === Foreground-service plumbing (spec §5.1) ===
+    //
+    // Promoted to foreground between CMD_START and CMD_STOP so Android 12+
+    // Background Activity Launch policy lets us dispatch OpenTracks's
+    // publicapi.Start/StopRecording activities (bug #14). Pattern matches
+    // OpenTracks's own TrackRecordingService. Notification is "ongoing" with
+    // LOW importance (silent).
+
+    /** Lazy create the recording channel. Safe to call on every promotion. */
+    private fun ensureRecordingChannel() {
+        if (Build.VERSION.SDK_INT < 26) return
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        if (nm.getNotificationChannel(CHANNEL_ID_RECORDING) != null) return
+        val channel = NotificationChannel(
+            CHANNEL_ID_RECORDING,
+            getString(R.string.notification_channel_recording_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = getString(R.string.notification_channel_recording_description)
+            setShowBadge(false)
+        }
+        nm.createNotificationChannel(channel)
+    }
+
+    private fun buildRecordingNotification(): Notification {
+        // Tap → open MainActivity. FLAG_IMMUTABLE is required from API 31+.
+        val mainIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val contentPi = PendingIntent.getActivity(
+            this, /* requestCode= */ 0, mainIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID_RECORDING)
+            .setSmallIcon(android.R.drawable.ic_menu_directions)
+            .setContentTitle(getString(R.string.notification_recording_title))
+            .setContentText(getString(R.string.notification_recording_text))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(contentPi)
+            .build()
+    }
+
+    private fun promoteToForeground() {
+        ensureRecordingChannel()
+        val notif = buildRecordingNotification()
+        if (Build.VERSION.SDK_INT >= 34) {
+            // API 34+ requires the foregroundServiceType to be passed explicitly
+            // when calling startForeground from within a Service whose manifest
+            // declaration is foregroundServiceType="connectedDevice".
+            startForeground(
+                NOTIF_ID_RECORDING,
+                notif,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } else {
+            startForeground(NOTIF_ID_RECORDING, notif)
+        }
+        Log.d(TAG, "promoted to foreground")
+    }
+
+    private fun demoteFromForeground() {
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        else stopForeground(true)
+        Log.d(TAG, "demoted from foreground")
     }
 
     /**
@@ -260,9 +346,22 @@ class PebbleListenerService : BasePebbleListenerService() {
             coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
             return ReceiveResult.Nack
         }
+        if (!CdmManager.isPaired(this)) {
+            // Not fatal — we still attempt the dispatch — but log loudly. Without
+            // a CDM association, BAL will reject the startActivity on API 31+ and
+            // startForeground throws ForegroundServiceStartNotAllowedException on
+            // API 34+. The companion's Home screen exposes a "Pair Pebble for
+            // background access" button that fixes this with one tap.
+            Log.w(TAG, "CMD_START but no CDM association — open the companion app and tap Pair Pebble")
+        }
         Log.d(TAG, "CMD_START → startRecording($pkg)")
+        // Promote *before* dispatching: foreground state grants the BAL
+        // allowance Android 12+ requires for the subsequent startActivity.
+        // Bug #14 fix; see class header.
+        promoteToForeground()
         val ok = OpenTracksApi.startRecording(this, pkg)
         if (!ok) {
+            demoteFromForeground()
             coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
             return ReceiveResult.Nack
         }
@@ -274,7 +373,9 @@ class PebbleListenerService : BasePebbleListenerService() {
     private fun handleStop(): ReceiveResult {
         val pkg = resolveVariant() ?: return ReceiveResult.Nack
         Log.d(TAG, "CMD_STOP → stopRecording($pkg)")
+        // Stay foreground for the dispatch (BAL still required), then demote.
         OpenTracksApi.stopRecording(this, pkg)
+        demoteFromForeground()
         return ReceiveResult.Ack
     }
 
@@ -300,6 +401,10 @@ class PebbleListenerService : BasePebbleListenerService() {
          * watchapp's HR sample period; both update on the same beat.
          */
         private const val POLL_PERIOD_MS = 5_000L
+
+        // Foreground-service notification (spec §5.1).
+        private const val CHANNEL_ID_RECORDING = "run.openpebble.companion.recording"
+        private const val NOTIF_ID_RECORDING = 1001
 
         // Column names — ALL lowercase. SQLite is case-insensitive in unquoted
         // SQL but Android's Cursor.getColumnIndexOrThrow is case-sensitive on

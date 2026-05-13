@@ -95,6 +95,48 @@ quick.
 
 Both fixes verified against the upstream files (`pebble-dev/.../IntentDashboardUtils.java` and `OpenTracksApp/.../TrackPointsColumns.java` on `main` as of 2026-05-13).
 
+## 2026-05-13 — Adopt CompanionDeviceManager for BAL exemption (supersedes today's foreground-service-from-background attempt below)
+
+**Decision:** Pair the Pebble via Android's CompanionDeviceManager (CDM) at first launch. Manifest declares `REQUEST_COMPANION_RUN_IN_BACKGROUND` + `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`; both are normal permissions that activate when the CDM association is in place. The foreground-service promotion from the prior entry stays — it's still useful UX-wise — but now actually *works* because the CDM grant unlocks the foreground-service-from-background path on API 34+.
+
+**Rationale:** The entry directly below this one proposed promoting `PebbleListenerService` to foreground via `Service.startForeground()` from within `handleStart`. Live-tested today on a real Pixel running Android 14+; it failed silently on every CMD_START. `Service.startForeground()` is itself subject to the same family of "no background activity launches" restrictions as BAL on Android 14+ — calling it from a Bluetooth-triggered service callback throws `ForegroundServiceStartNotAllowedException`. `BOUND_FOREGROUND_SERVICE` proc state isn't enough; the system requires an actual foreground-eligible state at call time.
+
+The OS-blessed fix is CDM. AOSP's `BackgroundActivityStartController` short-circuits its BAL gate to `BAL_ALLOW_ALLOWLISTED_COMPONENT` for any UID with an active CDM association, and the FGS-restrictions list grants the same exemption to apps with `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`. Gadgetbridge — the established open-source Pebble companion — uses exactly this pattern to control watches from a background service.
+
+**Trade-off:** One user-visible step at first launch (the CDM system dialog showing the Pebble; user taps "Allow"). The user explicitly accepted "open the companion app once to allow permissions". The pairing is permanent; survives reinstalls of OpenPebbleRun? — no, it's tied to the package and is cleared on uninstall. Re-paired on next first launch.
+
+**Code shape:**
+- New `companion/.../cdm/CdmManager.kt` encapsulates `CompanionDeviceManager.associate(...)` (modern callback path on API 33+, legacy `onDeviceFound` on 26-32) and `myAssociations` check.
+- MainActivity gains a `pairingLauncher: ActivityResultLauncher<IntentSenderRequest>` that drives the CDM system dialog, plus a `paired` state and a "Pair Pebble for background access" button on Home (only when not paired).
+- PebbleListenerService gets a defensive `Log.w` if `CdmManager.isPaired == false` at CMD_START time — same code as before; the CDM grants make the existing `promoteToForeground()` + `startActivity` calls succeed.
+- AssociationRequest filter targets the Pebble's BT MAC (extracted from `PebbleInfoRetriever.getConnectedWatches()` — PebbleKit gives us the MAC via `WatchIdentifier`) so the dialog is one-tap, single-device. Falls back to a name regex when MAC isn't known yet.
+- Both REQUEST_COMPANION_* permissions declared in the manifest as `<uses-permission>`. Normal level — no runtime prompt — but the underlying grant only takes effect once the CDM association is created.
+
+**Alternatives considered:**
+- *In-service `startForeground` (the entry below)* — implemented today, broken on Android 14+ as described above. Code stays in tree because once CDM is in place it actually works and gives a nice "Recording" notification.
+- *PendingIntent with creator-side BAL* — earlier attempt today. Fragile; PI grant dies on process kill. Discarded.
+- *CompanionDeviceService + startObservingDevicePresence* — useful for presence-based lifecycle callbacks (stop polling when Pebble out of BT range). Not needed for the BAL fix; association alone grants the exemption. Future v1.0 enhancement.
+
+## 2026-05-13 — Adopt foreground service for run state (supersedes spec §5.1 no-foreground-service prohibition)
+
+**Decision:** `PebbleListenerService` is promoted to a foreground service (`foregroundServiceType="connectedDevice"`) while a run is active (between CMD_START and CMD_STOP). A persistent low-importance notification is posted during the run, dismissed on stop. `POST_NOTIFICATIONS` is requested at first launch on API 33+. Spec §5.1 ("No foreground service. No `POST_NOTIFICATIONS`.") is amended; matching §9 and §11 also updated.
+
+**Rationale:** Android 12+'s Background Activity Launch (BAL) policy silently refuses `context.startActivity` from a bound service with no visible window — observed in live testing today as `BAL_BLOCK, result code=102` on every CMD_START and CMD_STOP arriving from the watch while the companion's MainActivity wasn't foreground. This defeats spec §5.2's "watch is the canonical control surface" requirement. OpenTracks itself solves the identical problem with a foreground service — `TrackRecordingService` is declared with `foregroundServiceType="location|connectedDevice"`, the publicapi.StartRecording activity briefly visible to promote it, then `finish()`es. Our trigger model (watch press → bound service handler) can't mimic the briefly-visible-Activity entrance, but we can mimic the foreground-service part: promote our already-running bound service to foreground via `startForeground()` from within `handleStart()`, demote in `handleStop()`. The foreground state grants BAL for the StartRecording / StopRecording dispatches.
+
+The cost is one ongoing notification while a run is active. That's the standard fitness-app UX — users already see one from OpenTracks during the same run.
+
+**Alternatives considered:**
+- *PendingIntent with creator-side BAL* — attempted earlier today (`OpenTracksApi.prepareLaunchTokens` called from MainActivity). Fragile: PI captures BAL allowance only while MainActivity is foreground; doesn't survive process death; user has to remember to open the companion app after each install or process kill. First implementation crashed on API 34+ due to an API misuse (`setPendingIntentBackgroundActivityStartMode` is for the SENDER at send time, not the CREATOR at create time). Reverted as part of this entry.
+- *CompanionDeviceManager + REQUEST_COMPANION_RUN_IN_BACKGROUND* — cleaner Android-blessed mechanism; ties BAL allowance to a paired device's BLE presence. Requires a visible pairing dialog (extra one-time UX), a CDM association lifecycle, and substantial new code. Considered for a future v1.0 enhancement.
+- *Briefly-visible Activity (direct OpenTracks mimic)* — doesn't fit our trigger model. The service can't launch any activity from background without BAL allowance, defeating the bootstrap.
+
+**Code changes:**
+- `companion/app/src/main/AndroidManifest.xml` — added `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` (API 34+), `POST_NOTIFICATIONS` (API 33+); added `foregroundServiceType="connectedDevice"` on the listener service.
+- `PebbleListenerService.kt` — notification channel + builder, `promoteToForeground()` called in `handleStart` before the dispatch, `demoteFromForeground()` in `handleStop` after the dispatch (and defensive demote in `onDestroy`).
+- `OpenTracksApi.kt` — PendingIntent infrastructure removed; back to direct `context.startActivity`. Cleaner code; the service's foreground state is now responsible for BAL.
+- `MainActivity.kt` — `prepareOpenTracksLaunchTokens` removed; POST_NOTIFICATIONS runtime permission requested on API 33+ via `ActivityResultContracts.RequestPermission`.
+- `res/values/strings.xml` — notification channel name/description, recording title/text.
+
 ## 2026-05-13 — Restore multi-variant OpenTracks probe (supersedes F-Droid-only below)
 
 **Decision:** Restore the four-package OpenTracks probe (`de.dennisguse.opentracks`, `.playstore`, `.debug`, `.nightly`) and the Home-screen variant label. The "F-Droid only" portion of the entry below is reversed; the deferred-external-HR and Dashboard-API-channel decisions in that entry still stand.

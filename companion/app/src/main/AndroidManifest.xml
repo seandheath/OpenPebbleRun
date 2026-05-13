@@ -14,6 +14,41 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!--
+        Foreground-service support for run state (spec §5.1). PebbleListenerService
+        promotes itself to a foreground service while CMD_START..CMD_STOP is active
+        so Android 12+ Background Activity Launch policy lets us dispatch
+        OpenTracks's publicapi Start/StopRecording activities from a background
+        wake-up. Mirrors OpenTracks's own TrackRecordingService pattern.
+
+        FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to match the
+        service's android:foregroundServiceType="connectedDevice" declaration.
+        POST_NOTIFICATIONS is requested at runtime in MainActivity on API 33+;
+        if denied the service still gets foreground state (just no visible
+        notification), so the watch-driven flow keeps working.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
+        android:minSdkVersion="34" />
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        android:minSdkVersion="33" />
+
+    <!--
+        CompanionDeviceManager BAL/FGS exemptions (spec §5.1).
+        Both are normal-level: declaring them is necessary, but the actual grant
+        only takes effect once the user completes the CDM pairing dialog in
+        MainActivity. With an active association, Android's
+        BackgroundActivityStartController short-circuits to
+        BAL_ALLOW_ALLOWLISTED_COMPONENT for our UID — letting
+        PebbleListenerService dispatch OpenTracks's publicapi.StartRecording /
+        StopRecording from a watch-button callback and promote itself to
+        foreground service for the duration of the run.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+
+    <!--
         Package visibility on Android 11+ (API 30+) requires explicit declarations
         for any package we resolve or any Intent action we send. Spec §9.
     -->
@@ -86,6 +121,7 @@
         <service
             android:name=".pebble.PebbleListenerService"
             android:exported="true"
+            android:foregroundServiceType="connectedDevice"
             tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH" />
