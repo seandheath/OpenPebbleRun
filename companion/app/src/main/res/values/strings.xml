@@ -7,7 +7,7 @@
     <!-- First-launch instructions (spec §5.2.1) -->
     <string name="first_launch_intro">OpenPebbleRun needs OpenTracks with Public API enabled.</string>
     <string name="first_launch_step_1">1. Install OpenTracks</string>
-    <string name="first_launch_step_2">2. In OpenTracks: Settings → Public API → Enable</string>
+    <string name="first_launch_step_2">2. In OpenTracks: Settings → Public API → enable both \"Public API\" and \"Automatic data transfer\"</string>
     <string name="first_launch_step_3">3. Pair Pebble in the official Pebble app</string>
     <string name="first_launch_install">Install OpenTracks (F-Droid)</string>
     <string name="first_launch_open_settings">Open OpenTracks settings</string>

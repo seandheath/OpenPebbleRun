@@ -155,7 +155,7 @@ One screen, shown only if Public API check fails. No multi-step wizard.
 - Text: "OpenPebbleRun needs OpenTracks with Public API enabled."
 - Steps shown inline:
   1. Install OpenTracks (button → IzzyOnDroid / F-Droid link)
-  2. In OpenTracks: Settings → Public API → Enable
+  2. In OpenTracks: Settings → Public API → enable both **Public API** and **Automatic data transfer** (the dashboard-callback gate; recording starts without it but `DashboardActivity` never fires)
   3. Pair Pebble in the official Pebble app
 - Button: "Open OpenTracks settings" (Intent to OpenTracks; falls back to launcher Intent)
 - Button: "Done"

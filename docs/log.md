@@ -66,6 +66,20 @@ quick.
 **Rationale:** Spec §4.1 targets the `emery` platform (Pebble Time 2) which is only supported by the CoreDevices pebble-tool fork. pebble.nix already wraps both upstream and CoreDevices toolchains and ships a binary cache (`cachix use pebble`), so users skip a ~30-minute toolchain rebuild. Single composed dev shell beats two-shell juggling.
 **Alternatives considered:** Vendor the Pebble SDK ourselves (rejected — that's pebble.nix's job and they do it better). Manual install instructions in README (rejected — workflow friction discouraged contributors).
 
+## 2026-05-13 — OpenTracks gates dashboard callback behind a second toggle
+
+**Discovery:** OpenTracks's Public API settings expose two switches, not one:
+1. **Public API** (`publicapi_enabled_key`) — gates StartRecording / StopRecording.
+2. **Automatic data transfer** (`publicapi_dashboard_enabled_key`) — gates the dashboard callback (the `STATS_TARGET_PACKAGE` / `STATS_TARGET_CLASS` invocation).
+
+Recording starts unconditionally when (1) is on, but our `DashboardActivity` only fires when (2) is also on (`StartRecording.java:39` in OpenTracks: `if (PreferencesUtils.isPublicAPIDashboardEnabled()) { startDashboardAPI(...) }`). With only (1) enabled, the watch sat on "Starting…" until the 15 s timeout and then displayed the failure message — confusingly, because the run *had* started in OpenTracks; we just never got the callback we send `RUN_STARTED` from.
+
+Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both toggles.
+
+**Why this matters for first-launch UX:** Right now we can't programmatically check whether the second toggle is on — only that OpenTracks is installed. Spec §11 already accepts "Public API enablement is not auto-verified". Step 10 (home polish) is a good place to add a "Recording started but no dashboard data in 30 s? Check OpenTracks → Public API → Automatic data transfer" hint when the user reports the watch as stuck.
+
+<!-- TODO:FEATURE — surface the dashboard-toggle hint in companion UI on detected dashboard timeout (step 10) -->
+
 ## 2026-05-12 — Auto-bootstrap pebble-tool + SDK in shellHook
 
 **Decision:** `flake.nix`'s `shellHook` now installs `pebble-tool` via `uv` and runs `pebble sdk install latest` on first `nix develop` (idempotent on subsequent entries). `OPENPEBBLERUN_SKIP_SETUP=1` opts out. Top-level `make pebble-setup` re-runs the same logic explicitly; `make pebble-setup-clean` wipes both.
