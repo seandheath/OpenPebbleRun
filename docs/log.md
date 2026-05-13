@@ -83,7 +83,7 @@ quick.
 
 **OpenTracks project home moved**: from GitHub `OpenTracksApp/OpenTracks` (still mirrored, last tagged v4.22.0 Aug 2025) to Codeberg `OpenTracksApp/OpenTracks` (active, current tags through v4.27.0). docs/specification.md §6.2 references the Codeberg source going forward.
 
-<!-- TODO:FEATURE — spec §4.3 step-8 (external HR via OpenTracks) needs redesign for v4.27+ — dashboard URI no longer projects sensor_heartrate -->
+<!-- Resolved 2026-05-13: external HR via OpenTracks is deferred from v1; see decision-log entry "Target F-Droid only; defer external HR; Dashboard API confirmed as the channel". -->
 
 ## 2026-05-13 — Dashboard URI delivery + column-name corrections
 
@@ -94,6 +94,34 @@ quick.
 2. **Column-name case.** Spec §6.2 had `MOVINGTIME`, `TOTALDISTANCE`, `SENSOR_HEARTRATE` (UPPER_SNAKE). OpenTracks's `TracksColumns.java` / `TrackPointsColumns.java` declare them as **lowercase** Java string constants (`movingtime`, `totaldistance`, `sensor_heartrate`). SQLite is case-insensitive in unquoted SQL, but Android's `Cursor.getColumnIndexOrThrow` is case-sensitive on most ContentProvider implementations — so uppercase requests threw `IllegalArgumentException`, our defensive try/catch swallowed it, every `longOrNull`/`floatOrNull` returned null → watch saw zero/missing for every metric even when the track was recording. Spec §6.2 and `DashboardActivity`'s constants are now lowercase.
 
 Both fixes verified against the upstream files (`pebble-dev/.../IntentDashboardUtils.java` and `OpenTracksApp/.../TrackPointsColumns.java` on `main` as of 2026-05-13).
+
+## 2026-05-13 — Restore multi-variant OpenTracks probe (supersedes F-Droid-only below)
+
+**Decision:** Restore the four-package OpenTracks probe (`de.dennisguse.opentracks`, `.playstore`, `.debug`, `.nightly`) and the Home-screen variant label. The "F-Droid only" portion of the entry below is reversed; the deferred-external-HR and Dashboard-API-channel decisions in that entry still stand.
+
+**Rationale:** Stripping the probe added friction for Play Store users with no real benefit. The variant branches were ~10 lines total (manifest `<package>` entries, probe list, label table, optional `variantPackage` parameter on `OpenTracksApi`) and added no measurable maintenance load — first-resolved-wins is dead-simple. The earlier simplification was premature: removing optionality that's actually exercised by real users.
+
+**Edits made:** spec §2 (drop the F-Droid-only non-goal), §5.2.1 (revert step 1 wording), §5.2.2 (variant name back in Home row), §5.4 (four-variant probe), §6.1 (variable `<package>` in component), §9 (`<queries>` lists all four). Six code files restored via `git checkout HEAD -- …` — working-tree-only revert, no commit existed between the two decisions.
+
+**Alternatives considered:** F-Droid + Play Store only (skip the dev variants). Rejected as marginal — once we're already paying for two variants the cost of `.debug`/`.nightly` is zero, and they're occasionally useful for development against an OpenTracks dev build.
+
+## 2026-05-13 — Target F-Droid only; defer external HR; Dashboard API confirmed as the channel
+
+**Decision:** The OpenTracks integration channel is the Dashboard API (typed content-provider URIs delivered via ClipData) — same channel OSMDashboard uses, same channel Gadgetbridge consumes. Companion targets the single F-Droid package `de.dennisguse.opentracks`. External HR (BLE strap → OpenTracks → companion → watch) is deferred from v1.
+
+**Rationale:**
+- *Channel.* OpenTracks's README §"Dashboard API" makes explicit that Gadgetbridge is a *consumer* of the Dashboard API, not an alternate surface. Routing pebblerun through Gadgetbridge would mean depending on Gadgetbridge's historically thin Pebble support, with no signal benefit (we already get typed columns directly). The alternative "Notification bridge" path (NotificationListenerService parsing OpenTracks's notification text) loses typed metrics, requires the intrusive Notification Access permission, and still wouldn't help with HR.
+- *F-Droid only.* The four-variant probe (`de.dennisguse.opentracks` / `.playstore` / `.debug` / `.nightly`) was added speculatively early on. F-Droid is the supported install for everyone Sean wants to reach; every additional variant adds a `<queries>` entry plus a label branch plus probe ceremony for nobody. Cutting these collapses `OpenTracksVariant` from ~100 lines to a constant + one `getPackageInfo` call.
+- *Defer HR.* Two reasons stack here. (1) v4.27's `DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS` exposes only `_id, trackid, latitude, longitude, time, type, speed` — `sensor_heartrate` is no longer in the projection, so the existing "read TrackPoints' SENSOR_HEARTRATE and forward" mechanism is dead. (2) The Pebble SDK cannot act as a BLE GATT central — `HealthService` exposes only the on-board optical sensor; PebbleKit BLE is phone↔watch transport. So "BLE strap → watch directly" is not implementable. The only realistic future external-HR path is *companion-mediated BLE forwarding*, which is real work that shouldn't block shipping pace/time/distance end-to-end.
+
+**Spec changes:** §2 (non-goals add F-Droid-only + deferred-external-HR), §4.3 (single-source HR, drop companion auto-detect), §5.2.1 (single install source), §5.2.2 (drop variant chip), §5.3 (drop the v4.27 caveat tying §4.3 step 8 to the projection), §5.4 (single package, no probe loop), §6.1 (component hard-codes F-Droid package), §6.2 (drop `sensor_heartrate` column, declare v4.27 projection as baseline), §7.2 (reserve keys 113/114/124, no metric-table entries), §7.3 (drop HR rows), §9 (`<queries>` lists only `de.dennisguse.opentracks`), §11 (HR limitation simplified), §14 (renumber: step 8 external HR removed).
+
+**Code changes:** `OpenTracksVariant` reduces to `PACKAGE` const + `isInstalled()`; `Detection` data class deleted; `MainActivity` / `HomeScreen` / `PebbleListenerService` updated to use a boolean. `OpenTracksApi.startRecording / stopRecording / openApp` lose the `variantPackage` parameter (always F-Droid). `pebble/Keys.kt` removes `HR_SOURCE_EXTERNAL`, `HR_SOURCE_INTERNAL`, `HR_EXTERNAL`. `AndroidManifest.xml` `<queries>` trimmed to a single OpenTracks `<package>`. `strings.xml` first-launch step-1 already names F-Droid; no change required.
+
+**Alternatives considered:**
+- *Notification-listener bridge (Gadgetbridge-style).* Rejected — loses typed metrics, needs Notification Access, no HR benefit.
+- *Keep multi-variant for flexibility.* Rejected — speculative, every variant costs a manifest entry + probe branch + label arm.
+- *Pebble-side BLE strap.* Rejected — blocked by Pebble SDK (no BLE central role for watchapps).
 
 ## 2026-05-13 — OpenTracks gates dashboard callback behind a second toggle
 
@@ -140,7 +168,6 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
-<!-- TODO:FEATURE — external HR auto-detect state machine (spec §14 step 8) -->
 <!-- TODO:FEATURE — stop-confirm screen + vibration (spec §14 step 9, replaces transitional Back→CMD_STOP) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->

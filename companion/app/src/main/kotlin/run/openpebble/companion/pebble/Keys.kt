@@ -23,10 +23,11 @@ object Keys {
     // Companion → Watch
     const val RUN_STARTED:        UInt = 110u
     const val RUN_FAILED:         UInt = 111u
-    const val HR_SOURCE_EXTERNAL: UInt = 113u
-    const val HR_SOURCE_INTERNAL: UInt = 114u
     const val PACE_CURRENT:       UInt = 120u  // uint16, sec/mi capped 3600
     const val TIME:               UInt = 122u  // uint32, seconds
     const val DISTANCE:           UInt = 123u  // uint32, hundredths of a mile
-    const val HR_EXTERNAL:        UInt = 124u  // uint16, bpm
+
+    // Reserved (spec §7.2): 113 HR_SOURCE_EXTERNAL, 114 HR_SOURCE_INTERNAL,
+    // 124 HR_EXTERNAL — held back for the deferred external-HR feature
+    // (docs/log.md 2026-05-13 "Target F-Droid only; defer external HR; …").
 }
