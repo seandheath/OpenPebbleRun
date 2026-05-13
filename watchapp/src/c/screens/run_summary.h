@@ -6,8 +6,9 @@
  * state survives even after its window is removed from the stack, so the
  * snapshot is valid until the watchapp exits.
  *
- * Four rows: DISTANCE, TIME, AVG PACE, AVG HR. Any button pops back to
- * pre-run. No inbox handler — no metrics expected once the run has stopped.
+ * Four rows: DISTANCE, TIME, AVG PACE, AVG HR. Back exits the watchapp;
+ * Select/Up/Down are ignored. No inbox handler — no metrics expected once
+ * the run has stopped.
  */
 
 #pragma once

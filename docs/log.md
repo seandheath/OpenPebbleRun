@@ -257,11 +257,34 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-13 — Iconographic stop buttons + remove pre-run screen
+
+**Decision:** Stop entry on active-run moves from Select to **Down**, with a small filled-square stop-icon hint painted at the right edge of the screen vertically aligned with the physical Down button. Stop-confirm uses **Up = ✓ / Down = ✕** at the right edge (Back mirrors Down for Pebble's "Back = go back" convention; Select is a no-op). Run-summary's **Back** exits the watchapp entirely (`window_stack_pop_all`) and Select/Up/Down are ignored. The pre-run "Press Select to start" screen is **deleted** — the watchapp launches straight into active-run, and `pre_run.{c,h}` are removed.
+
+**Rationale:** Runs are started from the companion phone app (today's earlier v0.1 pivot entry); pre-run's Select-to-start affordance no longer does anything useful, and a screen whose only prompt has been disabled is actively user-confusing. Removing it eliminates the "press a button that does nothing" launch state and reflects the watch's real role in v0.1: a display surface for in-progress runs and the stop-confirm flow. Icon hints next to physical buttons remove the "which button does what" ambiguity during a sweaty run, and "Down twice from active-run returns to active-run" is a discoverable invariant the user can rely on without reading docs. Run-summary's Back-only binding prevents a stray Up/Down press from dismissing the summary before the user has read their final stats.
+
+**Implementation notes:**
+- New shared module `watchapp/src/c/screens/icons.{c,h}` exposes `icons_draw_stop_square`, `icons_draw_check`, `icons_draw_x`. Hand-drawn via `graphics_fill_rect` / `graphics_draw_line` (stroke width 3, AA on for line glyphs). No PNG resources — `package.json`'s `resources.media` stays empty.
+- `active_run.c`: new `Layer *s_stop_icon` at `GRect(184, 180, 16, 16)`; TIME label/value width shrunk 100 → 82 to free an 18 px right-edge gutter; Down rebound to `stop_confirm_show`; Select/Up no-op.
+- `stop_confirm.c`: dropped the "Select = Yes / Back = No" prompt entirely; new check (20×20 at y=40) and X (20×20 at y=180) layers; Up confirms (CMD_STOP + vibrate + run-summary + window-stack-remove dance), Down/Back cancel, Select no-op.
+- `run_summary.c`: `back_click_handler` → `window_stack_pop_all`; Select/Up/Down → `noop_click_handler`.
+- `main.c`: launches `active_run_show()` instead of `pre_run_show()`; deinit calls `active_run_hide()`.
+
+**Side effects (deferred cleanup):** the companion's `PebbleMessenger.sendRunFailed` and `PebbleListenerService.handleStart` (the CMD_START dispatch) become dead code — nothing on the watch ever sends `CMD_START` any more. The dead code is harmless; a sweep can happen in a separate change.
+
+**Alternatives considered:**
+- *Replace pre-run with a "Start on phone" idle screen* — same information ("there's no run yet"), more code, no functional gain over active-run's existing placeholder + 30 s stale-dim.
+- *Auto-exit if no run is active within 3 s of launch* — apps that close themselves are confusing.
+- *ActionBarLayer for the icons* — reserves a ~30 px column on emery, forces a full active-run grid reflow. Inline 16-px gutter is tighter and lets us keep the existing 100/100 column split on the upper rows.
+- *Bitmap icons via `package.json` resources* — three PNGs for three trivial primitives; breaks the resource-free deployment invariant for negligible visual gain.
+- *Long-press Back as stop-entry* — less discoverable than a visible icon; no `multi_click` chord pattern exists elsewhere in the codebase to mirror.
+
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:FEATURE — companion-initiated stop should also trigger watch run-summary (requires new RUN_STOPPED key; see 2026-05-13 active-run-Back entry) -->
+<!-- TODO — sweep dead companion-side CMD_START path: PebbleMessenger.sendRunFailed, PebbleListenerService.handleStart (no watch consumer after 2026-05-13 icons entry) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
