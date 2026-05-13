@@ -6,12 +6,17 @@ plugins {
 
 android {
     namespace = "run.openpebble.companion"
-    compileSdk = 35
+    // compileSdk bumped to 36 because transitive deps (notably androidx.core
+    // 1.17.0 from PebbleKitAndroid2 1.1.0's dep closure) require Android 36
+    // APIs to be available. targetSdk stays at 35 per spec §5.1 — bumping
+    // compileSdk doesn't change runtime behavior, only what APIs the code is
+    // allowed to call against.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "run.openpebble.companion"
         minSdk = 26       // spec §5.1
-        targetSdk = 35    // spec §5.1
+        targetSdk = 35    // spec §5.1 — runtime behavior, kept on 35
         versionCode = 1
         versionName = "0.1.0"
     }

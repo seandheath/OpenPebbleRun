@@ -49,14 +49,18 @@
         # the hashes match the cache.
         pebblePkgs = pebble.packages.${system};
 
-        # Android SDK components for the companion app (spec §5.1: minSdk 26,
-        # targetSdk 35). 35.0.0 is what AGP 8.7 + compileSdk = 35 actually uses;
-        # 34.0.0 is present because the AGP toolchain still references it from
-        # somewhere and tries to auto-install if missing, which fails against
-        # the read-only nix store.
+        # Android SDK components for the companion app.
+        # Spec §5.1: minSdk 26, targetSdk 35 (runtime behavior version).
+        # compileSdk is 36 because transitive deps (notably androidx.core
+        # 1.17.0 via PebbleKitAndroid2 1.1.0) require Android 36 APIs to be
+        # available at compile time. compileSdk and targetSdk are decoupled —
+        # bumping compileSdk doesn't change runtime behavior.
+        # 35.0.0 + 34.0.0 build-tools stay around because AGP toolchain
+        # references them transitively and auto-install fails against the
+        # read-only nix store.
         androidComposition = pkgs.androidenv.composeAndroidPackages {
-          platformVersions = [ "35" "34" ];
-          buildToolsVersions = [ "35.0.0" "34.0.0" ];
+          platformVersions = [ "36" "35" "34" ];
+          buildToolsVersions = [ "36.0.0" "35.0.0" "34.0.0" ];
           includeNDK = false;
           cmdLineToolsVersion = "11.0";
           includeSystemImages = false;
