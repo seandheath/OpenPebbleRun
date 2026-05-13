@@ -257,11 +257,70 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
+
+**Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
+
+**Rationale:** One-tap "start the run and put the phone away" UX — previously the user landed on the companion's idle Home screen and had to navigate to OpenTracks manually to confirm recording was actually running. Deferring the track name to OpenTracks's setting respects the user's configuration without requiring privileged SharedPreference reads (a third-party app cannot read another app's `SharedPreferences` on modern Android; OpenTracks does not expose its preferences via a ContentProvider).
+
+**Implementation notes:**
+- `OpenTracksApi.kt`: removed `EXTRA_TRACK_NAME` constant and the `putExtra` line. Class header docstring updated to explain the omission.
+- `DashboardActivity.onCreate`: after stashing URIs in `RunSession` and dispatching `sendRunStarted`, calls `OpenTracksApi.openApp` to foreground OpenTracks. Done from here rather than `MainActivity.onStartTapped` because OpenTracks's callback to `DashboardActivity` races a launcher Intent fired from `MainActivity` — the race lands `DashboardActivity` on top of OpenTracks (the "Recording — see your watch" screen the user reported seeing in the first attempt). Firing `openApp` from inside the callback inverts the order: OpenTracks foregrounds *after* its callback to us has been delivered, with `DashboardActivity` underneath in our task (URI grants preserved per its class-header note).
+- `MainActivity.onStartTapped`: now just `startWatchapp` + `startRecording`. The earlier-iteration `openApp` call there is removed.
+- Spec §5.2.2 updated with the corrected flow.
+- `openApp` was already defined and used by `FirstLaunchScreen`'s "Open OpenTracks settings" button; no helper changes.
+
+**Alternatives considered:**
+- *Pass ISO 8601 explicitly from companion* — overrides whatever the user configured in OpenTracks's settings.
+- *Pass localized date from companion* — same problem; locale-coupled which complicates testing.
+- *Read OpenTracks's `track_name_key` SharedPreference via reflection or a content provider hack* — preferences are private; fragile, version-coupled.
+- *Launch `de.dennisguse.opentracks.TrackRecordingActivity` directly* — that activity is not exported by OpenTracks (no intent-filter); only `publicapi.StartRecording` / `StopRecording` / `CreateMarker` are. The launcher Intent + OpenTracks's own resume-active-recording behavior is the supported path.
+
+## 2026-05-13 — Walk back "launch into active-run"; add minimal idle screen
+
+**Decision:** Add `screens/idle.{c,h}` — a two-line screen ("OpenPebbleRun" / "Start a run on your phone") that is the watchapp's launch entry point. Its inbox handler watches for `RUN_STARTED` and pushes active-run on top when one arrives. `main.c` now calls `idle_show()` instead of `active_run_show()`.
+
+**Rationale:** Earlier today the watchapp was wired to launch directly into active-run on the assumption that placeholders ("---", "0.00", "0:00") would be acceptable in the "no run active" state. Manual testing on hardware proved otherwise — `pebble install` auto-launches the watchapp, and the user immediately sees what looks like a stuck/broken run-stats display. The idle screen with explicit prompt text makes the "nothing is happening yet, do this next" state unambiguous. The transition path is the same as the deleted pre-run handled (inbox watches RUN_STARTED → push active-run), minus the obsolete Select-to-start state machine.
+
+**Implementation notes:**
+- Idle screen is essentially pre-run minus IDLE→STARTING and the ERROR/timeout states. No `CMD_START` is ever sent.
+- Inbox handler installed synchronously in `idle_show` to win the companion-start race (same fix the deleted pre_run.c carried; failure mode is identical).
+- `active_run.h` docstring walked back from "watchapp entry point" to "pushed by idle when RUN_STARTED arrives".
+- Spec §4.2 reverted from "Three screens, launch on active-run" to "Four screens, launch on idle"; §4.2.1 re-introduced with the new idle definition; §5.1 and §11 wording updated accordingly.
+
+**Alternatives reconsidered:**
+- *Keep launching into active-run* — original v0.1 design; the placeholder state looks broken in practice (user-reported).
+- *Auto-exit if no run within 3 s of launch* — surprising UX, and a quick `pebble install` launch would close itself before the user even sees it.
+- *Resurrect pre-run with state machine intact* — drags back the IDLE/STARTING/ERROR/timeout state and the dead `CMD_START` path. Idle is just the useful subset.
+
+## 2026-05-13 — Iconographic stop buttons + remove pre-run screen
+
+**Decision:** Stop entry on active-run moves from Select to **Down**, with a small filled-square stop-icon hint painted at the right edge of the screen vertically aligned with the physical Down button. Stop-confirm uses **Up = ✓ / Down = ✕** at the right edge (Back mirrors Down for Pebble's "Back = go back" convention; Select is a no-op). Run-summary's **Back** exits the watchapp entirely (`window_stack_pop_all`) and Select/Up/Down are ignored. The pre-run "Press Select to start" screen is **deleted** — the watchapp launches straight into active-run, and `pre_run.{c,h}` are removed.
+
+**Rationale:** Runs are started from the companion phone app (today's earlier v0.1 pivot entry); pre-run's Select-to-start affordance no longer does anything useful, and a screen whose only prompt has been disabled is actively user-confusing. Removing it eliminates the "press a button that does nothing" launch state and reflects the watch's real role in v0.1: a display surface for in-progress runs and the stop-confirm flow. Icon hints next to physical buttons remove the "which button does what" ambiguity during a sweaty run, and "Down twice from active-run returns to active-run" is a discoverable invariant the user can rely on without reading docs. Run-summary's Back-only binding prevents a stray Up/Down press from dismissing the summary before the user has read their final stats.
+
+**Implementation notes:**
+- New shared module `watchapp/src/c/screens/icons.{c,h}` exposes `icons_draw_stop_square`, `icons_draw_check`, `icons_draw_x`. Hand-drawn via `graphics_fill_rect` / `graphics_draw_line` (stroke width 3, AA on for line glyphs). No PNG resources — `package.json`'s `resources.media` stays empty.
+- `active_run.c`: new `Layer *s_stop_icon` at `GRect(184, 180, 16, 16)`; TIME label/value width shrunk 100 → 82 to free an 18 px right-edge gutter; Down rebound to `stop_confirm_show`; Select/Up no-op.
+- `stop_confirm.c`: dropped the "Select = Yes / Back = No" prompt entirely; new check (20×20 at y=40) and X (20×20 at y=180) layers; Up confirms (CMD_STOP + vibrate + run-summary + window-stack-remove dance), Down/Back cancel, Select no-op.
+- `run_summary.c`: `back_click_handler` → `window_stack_pop_all`; Select/Up/Down → `noop_click_handler`.
+- `main.c`: launches `active_run_show()` instead of `pre_run_show()`; deinit calls `active_run_hide()`.
+
+**Side effects (deferred cleanup):** the companion's `PebbleMessenger.sendRunFailed` and `PebbleListenerService.handleStart` (the CMD_START dispatch) become dead code — nothing on the watch ever sends `CMD_START` any more. The dead code is harmless; a sweep can happen in a separate change.
+
+**Alternatives considered:**
+- *Replace pre-run with a "Start on phone" idle screen* — same information ("there's no run yet"), more code, no functional gain over active-run's existing placeholder + 30 s stale-dim.
+- *Auto-exit if no run is active within 3 s of launch* — apps that close themselves are confusing.
+- *ActionBarLayer for the icons* — reserves a ~30 px column on emery, forces a full active-run grid reflow. Inline 16-px gutter is tighter and lets us keep the existing 100/100 column split on the upper rows.
+- *Bitmap icons via `package.json` resources* — three PNGs for three trivial primitives; breaks the resource-free deployment invariant for negligible visual gain.
+- *Long-press Back as stop-entry* — less discoverable than a visible icon; no `multi_click` chord pattern exists elsewhere in the codebase to mirror.
+
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:FEATURE — companion-initiated stop should also trigger watch run-summary (requires new RUN_STOPPED key; see 2026-05-13 active-run-Back entry) -->
+<!-- TODO — sweep dead companion-side CMD_START path: PebbleMessenger.sendRunFailed, PebbleListenerService.handleStart (no watch consumer after 2026-05-13 icons entry) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->

@@ -22,9 +22,16 @@
  * s_hr_sum, s_hr_count) is still valid — the binary's BSS lives until app
  * exit, not until window destroy.
  *
- * Buttons: Back (and any other) pops, revealing pre-run. No inbox handler —
- * a stopped run produces no further metrics, and the companion's poll loop
- * has been demoted in PebbleListenerService.handleStop.
+ * Buttons (see docs/log.md 2026-05-13 icons entry):
+ *   Back → exits the watchapp entirely (the stack at this point is just
+ *          [run_summary] — active-run and stop-confirm were removed by
+ *          stop_confirm's Up handler; pop_all empties and Pebble returns the
+ *          user to the launcher / previously-foregrounded app).
+ *   Select / Up / Down → ignored, so a stray button press doesn't yank the
+ *          user out of the summary before they've read it.
+ *
+ * No inbox handler — a stopped run produces no further metrics, and the
+ * companion's poll loop has been demoted in PebbleListenerService.handleStop.
  */
 
 #define SCREEN_W 200
@@ -36,12 +43,14 @@ static TextLayer *s_time_label,  *s_time_value;
 static TextLayer *s_pace_label,  *s_pace_value;
 static TextLayer *s_hr_label,    *s_hr_value;
 
-// String buffers for the four value cells. Sized to fit the longest expected
-// rendering (e.g. "1:23:45" for time, "###" for HR).
-static char s_dist_buf[10];
-static char s_time_buf[10];
+// String buffers for the four value cells. Sized to gcc's worst-case
+// format-truncation analysis (it can't see the runtime ranges of the uint32
+// inputs and assumes full uint range). Real outputs stay well below these
+// sizes — see active_run.c for the same sizing rationale.
+static char s_dist_buf[16];
+static char s_time_buf[16];
 static char s_pace_buf[12];
-static char s_hr_buf[8];
+static char s_hr_buf[12];
 
 // === Formatting helpers (mirror active_run.c) ===========================
 //
@@ -184,18 +193,23 @@ static void window_unload(Window *window) {
 
 // === Buttons ============================================================
 
-static void any_click_handler(ClickRecognizerRef r, void *ctx) {
-    // Any button dismisses to pre-run. Back is the conventional dismiss but
-    // Select/Up/Down all work the same — the user just saw a "RUN COMPLETE"
-    // page and any button is "got it, move on".
-    window_stack_pop(true);
+static void back_click_handler(ClickRecognizerRef r, void *ctx) {
+    // pop_all empties the window stack → Pebble exits the watchapp and
+    // returns the user to the launcher (or whichever app was foregrounded
+    // before ours). With pre-run gone the stack at this point is just
+    // [run_summary], so the dismiss is unambiguous.
+    window_stack_pop_all(true);
+}
+
+static void noop_click_handler(ClickRecognizerRef r, void *ctx) {
+    // Select/Up/Down intentionally ignored — see file-header docstring.
 }
 
 static void click_config_provider(void *ctx) {
-    window_single_click_subscribe(BUTTON_ID_BACK,   any_click_handler);
-    window_single_click_subscribe(BUTTON_ID_SELECT, any_click_handler);
-    window_single_click_subscribe(BUTTON_ID_UP,     any_click_handler);
-    window_single_click_subscribe(BUTTON_ID_DOWN,   any_click_handler);
+    window_single_click_subscribe(BUTTON_ID_BACK,   back_click_handler);
+    window_single_click_subscribe(BUTTON_ID_SELECT, noop_click_handler);
+    window_single_click_subscribe(BUTTON_ID_UP,     noop_click_handler);
+    window_single_click_subscribe(BUTTON_ID_DOWN,   noop_click_handler);
 }
 
 // === Public API =========================================================

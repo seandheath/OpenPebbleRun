@@ -8,6 +8,8 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import run.openpebble.companion.opentracks.OpenTracksApi
+import run.openpebble.companion.opentracks.OpenTracksVariant
 import run.openpebble.companion.pebble.PebbleMessenger
 import run.openpebble.companion.pebble.RunSession
 
@@ -59,11 +61,27 @@ class DashboardActivity : ComponentActivity() {
         RunSession.trackPointsUri = trackPointsUri
         RunSession.active = true
 
-        // Tell the watch the run is recording. Watch transitions from "Starting…"
-        // to the active-run window on receipt. Spec §4.2.1, §7.2 key 110. The
-        // service's next poll tick will start pushing pace/time/distance.
+        // Tell the watch the run is recording. Watch transitions from idle to
+        // the active-run window on receipt. Spec §7.2 key 110. The service's
+        // next poll tick will start pushing pace/time/distance.
         lifecycleScope.launch { PebbleMessenger.sendRunStarted(this@DashboardActivity) }
 
+        // Foreground OpenTracks's own UI so the user sees the live recording
+        // view rather than this Activity's "Recording…" placeholder. Done
+        // here (after OpenTracks's callback to us) rather than in
+        // MainActivity.onStartTapped — calling it from MainActivity races
+        // OpenTracks's callback dispatch and leaves us as the top activity.
+        // We do NOT finish() this Activity: its task-stack presence holds
+        // the FLAG_GRANT_READ_URI_PERMISSION grant alive (see class header).
+        // OpenTracks's launcher Intent uses FLAG_ACTIVITY_NEW_TASK so it
+        // comes up on top of our task without us collapsing.
+        OpenTracksVariant.cached(this)?.let { variantPkg ->
+            OpenTracksApi.openApp(this, variantPkg)
+        }
+
+        // Fallback content: the user only sees this if they navigate back
+        // from OpenTracks while the run is still going. "Recording — see
+        // your watch" is the right message in that case.
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER

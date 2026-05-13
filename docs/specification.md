@@ -60,18 +60,42 @@ The companion uses OpenTracks's **Public API** (Intents) to start/stop and **Das
 
 ### 4.2 Screens
 
-Four screens. Linear transitions: pre-run → active-run → stop-confirm → run-summary → pre-run.
+Four screens. Launch lands on idle; linear transitions
+idle → active-run → stop-confirm → run-summary → (Back exits watchapp).
 
-#### 4.2.1 Pre-run
+#### 4.2.1 Idle
 
-Shown on launch (and after dismissing run-summary).
+Watchapp entry point. Shown until the companion confirms a run is active.
 
-- App title
-- Prompt: "Press Select to start"
-- Select: send `CMD_START`, transition to active run (with "Starting..." text shown until `RUN_STARTED` received, 15s timeout → error text "Couldn't start. Open companion app on phone." Any button returns to pre-run.)
-- On `RUN_STARTED` in IDLE state (companion started a run while we were sitting on this screen), transition directly to active-run without "Starting...". This covers the companion-initiated start (§5.2.2 Home → Start Run) and the resume-on-reopen path: if the user backed out of active-run while a run was still recording, the companion replays `RUN_STARTED` on the next watchapp open and we jump straight back to active-run.
+```
+┌────────────────────────┐
+│                        │
+│    OpenPebbleRun       │   title (bold)
+│                        │
+│   Start a run on       │   prompt (regular)
+│      your phone        │
+│                        │
+└────────────────────────┘
+```
+
+- Title: "OpenPebbleRun" centered, `FONT_KEY_GOTHIC_28_BOLD`.
+- Prompt: "Start a run on your phone", wraps to two lines, `FONT_KEY_GOTHIC_18`.
+- Inbox handler watches `KEY_RUN_STARTED`. On arrival, pushes active-run
+  (§4.2.2) on top of the stack. Covers two paths: (a) the cold-launch-with-
+  run-active case, where the companion's `PebbleListenerService.onAppOpened`
+  replays `RUN_STARTED` within a few hundred ms — idle is effectively a
+  brief flash; (b) the launch-then-tap-Start case, where the user opens the
+  watchapp first and then taps Start Run on the companion.
+- Buttons:
+  - **Back**: exit the watchapp (`window_stack_pop_all`).
+  - **Select / Up / Down**: no-op. There is no on-watch start affordance.
 
 #### 4.2.2 Active run
+
+Pushed by idle when `RUN_STARTED` arrives. Not a launch entry point —
+showing this screen with "---" placeholders when no run is recording looks
+broken, so idle keeps the watch on a clearly-idle screen until the
+companion signals.
 
 Layout (200×228):
 
@@ -83,27 +107,54 @@ Layout (200×228):
 │  PACE         CADENCE  │  medium
 │  M:SS /mi     ### spm  │
 │                        │
-│  DIST         TIME     │  small
-│  0.00 mi      MM:SS    │
+│  DIST       TIME    ▪  │  small + stop icon
+│  0.00 mi    MM:SS      │
 └────────────────────────┘
 ```
+
+A small filled-square stop icon sits at the right edge of the bottom row,
+vertically aligned with the physical Down button — it marks the
+Down=open-stop-confirm affordance at a glance. The TIME cell is narrowed
+from 100 to 82 px wide to leave the 18 px gutter for the icon.
 
 HR, pace, and cadence are visually prominent. Distance and time secondary.
 
 Buttons:
-- **Back**: exit watchapp. The run keeps recording in the companion; re-opening the watchapp resumes on this screen (see §4.2.1). No `CMD_STOP` is sent — stop is gated behind Select+confirm so a stray Back press can't end a run.
-- **Select**: open stop-confirm screen
-- **Up / Down**: no-op
+- **Back**: exit watchapp. The run keeps recording in the companion;
+  re-opening the watchapp lands on this same screen and the companion
+  replays `RUN_STARTED`. No `CMD_STOP` is sent — stop is gated behind the
+  explicit Down+Up confirm path so a stray Back press can't end a run.
+- **Down**: open stop-confirm screen (§4.2.3).
+- **Select / Up**: no-op.
 
-If AppMessages stop arriving from companion >30s: dim metrics 50% to indicate stale. No vibration. Resume full brightness when next message arrives.
+If AppMessages stop arriving from companion >30s: dim metrics 50% to indicate
+stale. No vibration. Resume full brightness when next message arrives.
 
 #### 4.2.3 Stop confirm
 
-Shown when Select pressed on active-run.
+Shown when Down pressed on active-run.
 
-- Text: "Stop run? Select=Yes Back=No"
-- **Select**: send `CMD_STOP`, single short vibration on ack, transition to run-summary (§4.2.4)
-- **Back**: return to active-run (which has been ticking underneath — its inbox handler stayed installed, so stats are up-to-date on return)
+```
+┌────────────────────────┐
+│                     ✓  │
+│      Stop run?         │
+│                     ✕  │
+└────────────────────────┘
+```
+
+A checkmark icon at the right edge aligned with the physical Up button
+indicates confirm; an X icon at the right edge aligned with Down indicates
+cancel. The centered title is the only on-screen text.
+
+Buttons:
+- **Up** (✓): send `CMD_STOP`, single short vibration on ack, transition
+  to run-summary (§4.2.4).
+- **Down** (✕): return to active-run (which has been ticking underneath —
+  its inbox handler stayed installed, so stats are up-to-date on return).
+  Invariant: from active-run, pressing **Down twice** (once to enter
+  stop-confirm, once to cancel) lands you back on the live stats.
+- **Back**: mirrors Down (cancel) — Pebble convention is Back = go back.
+- **Select**: no-op.
 
 #### 4.2.4 Run summary
 
@@ -124,7 +175,15 @@ Shown after a confirmed stop. Snapshots the run's final stats from active-run's 
 - Avg pace: `time_sec * 100 / dist_hundredths_mi` (sec/mi), capped at 3600 ≡ "--:--".
 - Avg HR: arithmetic mean of all non-zero `HealthEventHeartRateUpdate` samples received while active-run was up. "---" if no samples ever fired.
 
-Buttons: **any** button pops to pre-run. No inbox handler — a stopped run produces no further metrics.
+Buttons:
+- **Back**: exit the watchapp entirely (Pebble default — pops to the
+  launcher or the previously-foregrounded app). With active-run +
+  stop-confirm already removed by the Up-confirm path, the window stack
+  here is just `[run_summary]`, so pop-all empties cleanly.
+- **Select / Up / Down**: ignored. A stray button press shouldn't yank the
+  user out of the summary before they've read it.
+
+No inbox handler — a stopped run produces no further metrics.
 
 ### 4.3 Sensors
 
@@ -158,7 +217,7 @@ AppMessage delivers one message at a time and ACKs each. Throttle sends to one p
 - **minSdk**: 26 (Android 8.0)
 - **targetSdk**: 35
 - **Language**: Kotlin
-- **Background**: PebbleKitAndroid2 bound service. Runs are started by tapping **Start Run** on the companion's Home screen (foreground; no Background Activity Launch restrictions apply). Watch-initiated `CMD_START` / `CMD_STOP` from a fully-backgrounded companion would hit Android 12+ BAL_BLOCK silently; this is documented as a known limitation (§11). PendingIntent, in-service `startForeground`, and CompanionDeviceManager workarounds were all attempted and rejected for v0.1 (see docs/log.md).
+- **Background**: PebbleKitAndroid2 bound service. Runs are started exclusively by tapping **Start Run** on the companion's Home screen (foreground; no Background Activity Launch restrictions apply). The watch UI offers no start affordance — the v0.1 watchapp launches onto an idle screen (§4.2.1) and waits for the companion's `RUN_STARTED` before transitioning to active-run. The watch-side `CMD_STOP` path is preserved for the in-app stop-confirm flow; this works because the user has the watchapp open (foreground) at that moment. PendingIntent, in-service `startForeground`, and CompanionDeviceManager workarounds for *watch-initiated start while companion is backgrounded* were all attempted and rejected for v0.1 (see docs/log.md).
 - **Foreground service while recording**: between Start and Stop the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. Foreground promotion is initiated by DashboardActivity (which OpenTracks calls back into our app from its own foreground context), so the FGS-from-background restriction doesn't apply. `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible.
 
 ### 5.2 Screens
@@ -185,6 +244,10 @@ Steady-state. Shown after first-launch.
 - Primary action: a **Start Run** button (becomes **Stop Run** while a run is active, switched live by a 1 Hz Compose tick reading `RunSession.active`). Disabled when OpenTracks isn't installed.
 - No settings, no troubleshoot, no run history. (Use OpenTracks for history.)
 - While a run is active, an ongoing notification ("Recording — see your watch") is shown in the shade. Tapping it opens this Home screen.
+
+**Start Run side effects.** Tapping the button triggers, in order: (1) launch the watchapp on the Pebble (`PebbleKit startAppOnTheWatch`), (2) fire OpenTracks's `publicapi.StartRecording` Intent. OpenTracks then calls our `DashboardActivity` back (via the `STATS_TARGET_PACKAGE`/`STATS_TARGET_CLASS` extras), and `DashboardActivity` (a) stashes the dashboard URIs in `RunSession`, (b) sends `RUN_STARTED` to the watch, and (c) fires OpenTracks's package launcher Intent (`OpenTracksApi.openApp`) to bring OpenTracks's recording UI to the foreground. Step (c) is the "one-tap start and put the phone away" affordance — it has to live in `DashboardActivity` rather than alongside (1) and (2) because OpenTracks's callback to us races a launcher-Intent fired earlier and would otherwise land `DashboardActivity` on top of OpenTracks.
+
+**Track name.** The companion does not set `TRACK_NAME` on the StartRecording Intent. OpenTracks's own "Default track name" preference applies (Settings → Recording → Default track name; options: Date ISO 8601 / Date local / Number). This honors the user's configured choice without requiring SharedPreferences reads — which third-party apps can't do. `TRACK_CATEGORY` and `TRACK_ICON` are still set to `"running"` (OpenTracks has no equivalent default-category preference).
 
 ### 5.3 Computed metrics
 
@@ -356,7 +419,7 @@ Each: `README.md`, `LICENSE`, one-line privacy statement.
 - PebbleKitAndroid2 v1.1.0 (April 2026) is the current pinned version. Pin in `build.gradle.kts`; expect API drift across minor versions.
 - Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware as of May 2026. Buttons-only UI.
 - An ongoing notification ("Recording — see your watch") is shown while a run is active and cannot be dismissed until you stop the run. Matches OpenTracks's own behaviour; users typically see both side-by-side during the same run.
-- **Runs are started from the companion app's Home screen, not from the watch.** The watch's Select-button still sends `CMD_START` and works *when the companion happens to be foreground*, but Android 12+ BAL policy silently blocks the dispatch when the companion is backgrounded. Three workarounds were attempted in v0.1 development — PendingIntent, in-service `startForeground`, CompanionDeviceManager pairing — and each failed on Android 14+ in different ways (`ForegroundServiceStartNotAllowedException`, fragile PI lifetime, CDM scan unable to find the Pebble while connected to the Pebble Android app). v0.1 ships with the foreground-app-only constraint; same pattern as Strava and most Android fitness apps.
+- **Runs are started from the companion app's Home screen, not from the watch.** The watchapp launches onto an idle screen (§4.2.1) with the text "Start a run on your phone" and waits for the companion's `RUN_STARTED` before transitioning to active-run. No on-watch start affordance — pre-run was removed in v0.1. The watch retains the in-app stop path (Down → stop-confirm → Up sends `CMD_STOP`), which works because the user has the watchapp foregrounded at that moment. Three workarounds for *watch-initiated start while companion is backgrounded* were attempted in v0.1 development — PendingIntent, in-service `startForeground`, CompanionDeviceManager pairing — and each failed on Android 14+ in different ways (`ForegroundServiceStartNotAllowedException`, fragile PI lifetime, CDM scan unable to find the Pebble while connected to the Pebble Android app). v0.1 ships with the foreground-app-only start constraint; same pattern as Strava and most Android fitness apps.
 
 ## 12. Testing
 

@@ -1,10 +1,18 @@
 /*
  * Active-run screen. Spec §4.2.2.
  *
+ * Pushed by the idle screen (§4.2.1) when its inbox handler receives
+ * RUN_STARTED. The watchapp does *not* launch directly into this screen —
+ * a run-stats display with "---" placeholders looks broken when nothing is
+ * actually being recorded, so idle stays on screen until the companion
+ * confirms a run is active.
+ *
  * 200×228 emery layout, three rows:
  *   HEART RATE       (large)   ### bpm
  *   PACE     CADENCE (medium)  M:SS /mi   ### spm
  *   DIST     TIME    (small)   0.00 mi    MM:SS
+ * Plus a small filled-square stop-icon hint at the right edge of the
+ * bottom row, vertically aligned with the physical Down button.
  *
  * Inbox keys handled (spec §7):
  *   120 PACE_CURRENT  uint16 sec/mi
@@ -16,10 +24,12 @@
  * watch's own HRM and step counter. Step 8 routes incoming HR_EXTERNAL to the
  * HR row, replacing the local HRM source.
  *
- * Buttons (spec §4.2.2, revised — see docs/log.md 2026-05-13):
- *   Back   → exit watchapp; run keeps recording in the companion.
- *   Select → open stop-confirm (spec §4.2.3).
- *   Up / Down → no-op.
+ * Buttons (spec §4.2.2, revised — see docs/log.md 2026-05-13 icons entry):
+ *   Back     → exit watchapp; run keeps recording in the companion. The
+ *              user can reopen and the companion replays RUN_STARTED.
+ *   Down     → open stop-confirm (spec §4.2.3). Square icon hint at
+ *              right edge marks this affordance.
+ *   Select / Up → no-op.
  *
  * Stale handling (spec §4.2.2 + §8.1): if no inbox message arrives within 30 s,
  * dim text colors to GColorLightGray. Restore full color on next inbox.

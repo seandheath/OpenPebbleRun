@@ -174,14 +174,21 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Driven by the Home screen's Start Run button. Two-step:
+     * Driven by the Home screen's Start Run button. Two-step here, plus a
+     * follow-up handoff in DashboardActivity:
      *  1. Launch our watchapp on the Pebble via PebbleKit's `startAppOnTheWatch`
      *     so the user doesn't have to open it manually. No-op if already open.
      *  2. Fire StartRecording to OpenTracks from this Activity's foreground
      *     context (no BAL issue). OpenTracks calls DashboardActivity back,
-     *     which sets RunSession.active=true and sends RUN_STARTED. The
-     *     watchapp (now open on pre-run IDLE) accepts RUN_STARTED and
-     *     transitions to the active-run window.
+     *     which (a) stashes the URIs in RunSession, (b) sends RUN_STARTED
+     *     to the watch, and (c) foregrounds OpenTracks's own UI via
+     *     OpenTracksApi.openApp. The watch's idle screen accepts
+     *     RUN_STARTED and transitions to active-run.
+     *
+     * The foreground handoff is done from DashboardActivity, not here.
+     * Calling openApp from this method races OpenTracks's callback
+     * dispatch and lands DashboardActivity on top of OpenTracks instead
+     * of the other way around.
      */
     private fun onStartTapped() {
         val pkg = detection.pkg ?: return

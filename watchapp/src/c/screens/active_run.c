@@ -1,5 +1,6 @@
 #include "active_run.h"
 #include "stop_confirm.h"
+#include "icons.h"
 #include "../app_message.h"
 
 #include <stdio.h>
@@ -46,12 +47,25 @@ static TextLayer *s_cad_label,  *s_cad_value;
 static TextLayer *s_dist_label, *s_dist_value;
 static TextLayer *s_time_label, *s_time_value;
 
-// Value buffers. AppMessage handler writes into these and refreshes the layer.
-static char s_hr_buf[8];      // "###" or "---"
-static char s_pace_buf[12];   // "M:SS"
-static char s_cad_buf[8];     // "###" or "---"
-static char s_dist_buf[10];   // "X.XX"
-static char s_time_buf[10];   // "MM:SS" or "H:MM:SS"
+// Small filled-square button hint at the right edge of the screen, vertically
+// aligned with the physical Down button (≈ y=188 center on emery). Drawn via
+// icons_draw_stop_square in stop_icon_update_proc. The TIME column (row 3
+// right) is shrunk from 100 to 82 px wide to leave room for this 16-px gutter.
+static Layer *s_stop_icon = NULL;
+
+// Value buffers. AppMessage handler writes into these and refreshes the
+// layer. Sized to gcc's worst-case format-truncation analysis (it can't see
+// the runtime ranges of bpm / seconds / hundredths-mile and assumes full
+// uint range): %lu can emit up to 10 digits + null, etc. Real outputs stay
+// well below these sizes (e.g. "172" for HR, "0:23:45" for time), but the
+// extra slack silences -Wformat-truncation. RAM cost is negligible (~14B).
+static char s_hr_buf[12];     // "###" or "---" (worst case "4294967295")
+static char s_pace_buf[12];   // "M:SS" — gcc reasons through the <3600 cap
+static char s_dist_buf[16];   // "X.XX" worst case "4294967295.99"
+static char s_time_buf[16];   // "MM:SS" / "H:MM:SS" worst case 3×10-digit
+// Cadence has no snprintf'd buffer — value layer is set to the literal
+// "---" placeholder in window_load and isn't updated until step 7 (spec §14)
+// reads HealthMetricStepCount and writes a derived SPM here.
 
 // Staleness tracking. last_inbox_ms is updated by inbox_handler; the timer
 // callback compares against `app_now_ms()` (we use a monotonic counter via
@@ -228,12 +242,14 @@ static void inbox_handler(DictionaryIterator *iter) {
 
 // ===== Buttons =====
 //
-// Spec §4.2.2 (revised — see docs/log.md 2026-05-13):
+// Spec §4.2.2 (revised — see docs/log.md 2026-05-13 icons entry):
 //   Back   → exit watchapp; run keeps recording in the companion. Re-opening
 //            resumes on this screen via the companion's onAppOpened replay of
 //            RUN_STARTED while RunSession.active is true.
-//   Select → open stop-confirm (spec §4.2.3).
-//   Up/Down → no-op.
+//   Down   → open stop-confirm (spec §4.2.3). A small black square hint is
+//            painted at the right edge of the screen next to the physical
+//            Down button so the affordance is visible at a glance.
+//   Select/Up → no-op (no pause feature, see spec §11).
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *ctx) {
     // pop_all empties the window stack; Pebble exits the app when the stack
@@ -243,20 +259,26 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *ctx) {
     window_stack_pop_all(true);
 }
 
-static void select_click_handler(ClickRecognizerRef recognizer, void *ctx) {
+static void down_click_handler(ClickRecognizerRef recognizer, void *ctx) {
     stop_confirm_show();
 }
 
 static void noop_click_handler(ClickRecognizerRef recognizer, void *ctx) {
-    // Up/Down intentionally unused — no pause feature (spec §11) and we don't
-    // want sweaty accidental presses to be load-bearing.
+    // Select/Up intentionally unused — no pause feature (spec §11) and we
+    // don't want sweaty accidental presses to end up load-bearing.
 }
 
 static void click_config_provider(void *ctx) {
     window_single_click_subscribe(BUTTON_ID_BACK,   back_click_handler);
-    window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
+    window_single_click_subscribe(BUTTON_ID_DOWN,   down_click_handler);
+    window_single_click_subscribe(BUTTON_ID_SELECT, noop_click_handler);
     window_single_click_subscribe(BUTTON_ID_UP,     noop_click_handler);
-    window_single_click_subscribe(BUTTON_ID_DOWN,   noop_click_handler);
+}
+
+// ===== Stop-icon hint =====
+
+static void stop_icon_update_proc(Layer *layer, GContext *ctx) {
+    icons_draw_stop_square(ctx, layer_get_bounds(layer));
 }
 
 // ===== Layer construction =====
@@ -314,6 +336,9 @@ static void window_load(Window *window) {
     layer_add_child(root, text_layer_get_layer(s_cad_value));
 
     // === Row 3: DIST | TIME (small) ===
+    // TIME column is shrunk from width 100 → 82 to leave an 18 px gutter at
+    // the right edge for the stop-icon hint. Time text remains centered in
+    // the narrower cell; "1:23:45" still fits at FONT_KEY_GOTHIC_24_BOLD.
     s_dist_label = make_label(
         GRect(COL_LEFT_X, ROW_BOT_Y + 4, COL_W, 16),
         "DIST mi");
@@ -321,15 +346,22 @@ static void window_load(Window *window) {
         GRect(COL_LEFT_X, ROW_BOT_Y + 20, COL_W, 36),
         FONT_KEY_GOTHIC_24_BOLD, "0.00");
     s_time_label = make_label(
-        GRect(COL_RIGHT_X, ROW_BOT_Y + 4, COL_W, 16),
+        GRect(COL_RIGHT_X, ROW_BOT_Y + 4, 82, 16),
         "TIME");
     s_time_value = make_value(
-        GRect(COL_RIGHT_X, ROW_BOT_Y + 20, COL_W, 36),
+        GRect(COL_RIGHT_X, ROW_BOT_Y + 20, 82, 36),
         FONT_KEY_GOTHIC_24_BOLD, "0:00");
     layer_add_child(root, text_layer_get_layer(s_dist_label));
     layer_add_child(root, text_layer_get_layer(s_dist_value));
     layer_add_child(root, text_layer_get_layer(s_time_label));
     layer_add_child(root, text_layer_get_layer(s_time_value));
+
+    // Stop-icon hint at the right edge, aligned with the physical Down button.
+    // 16×16 sits in the 18-px gutter freed up above; (184, 180) puts it
+    // approximately at the Down button's vertical center (≈ y=188 on emery).
+    s_stop_icon = layer_create(GRect(184, 180, 16, 16));
+    layer_set_update_proc(s_stop_icon, stop_icon_update_proc);
+    layer_add_child(root, s_stop_icon);
 
     // Cadence units shown inline in the value layer is wasteful; keep label
     // for the unit-bearing rows (DIST mi, CADENCE), value layer renders the
@@ -371,8 +403,10 @@ static void window_unload(Window *window) {
     text_layer_destroy(s_dist_label); text_layer_destroy(s_dist_value);
     text_layer_destroy(s_time_label); text_layer_destroy(s_time_value);
 
-    // Caller (pre_run) is responsible for re-installing its own inbox handler
-    // after we leave the stack. Clear ours defensively.
+    if (s_stop_icon) { layer_destroy(s_stop_icon); s_stop_icon = NULL; }
+
+    // We're the only inbox handler in the app post-pre_run-removal; clear
+    // defensively so a lingering window pop doesn't dispatch into freed state.
     app_message_set_inbox_handler(NULL);
 }
 
