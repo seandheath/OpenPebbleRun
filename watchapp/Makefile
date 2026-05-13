@@ -23,14 +23,29 @@ test:
 	@echo "Watchapp: manual testing only (spec §12). Use 'make run' to install on a watch."
 
 # Install on a connected phone (which forwards to the paired Pebble).
+# PEBBLE_PHONE is exported by the dev shell's flake.nix; can be overridden
+# inline (e.g., `PEBBLE_PHONE=10.0.0.42 make install`). PEBBLE_PHONE_IP is
+# accepted as a fallback alias.
+PHONE := $(if $(PEBBLE_PHONE),$(PEBBLE_PHONE),$(PEBBLE_PHONE_IP))
+
 run install:
-	pebble install --phone $(PEBBLE_PHONE_IP)
+	@if [ -z "$(PHONE)" ]; then \
+	  echo "PEBBLE_PHONE is unset. Set it before running:"; \
+	  echo "  PEBBLE_PHONE=<ip> make install"; \
+	  echo "or export it in the shell:"; \
+	  echo "  export PEBBLE_PHONE=<ip>"; \
+	  exit 1; \
+	fi
+	pebble install --phone $(PHONE)
 
 emulator:
 	pebble install --emulator emery
 
 logs:
-	pebble logs --phone $(PEBBLE_PHONE_IP)
+	@if [ -z "$(PHONE)" ]; then \
+	  echo "PEBBLE_PHONE is unset."; exit 1; \
+	fi
+	pebble logs --phone $(PHONE)
 
 clean:
 	pebble clean

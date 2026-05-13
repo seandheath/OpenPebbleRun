@@ -3,18 +3,20 @@
 # skip notice and exit 0 so that CI / dev shells without those tools still
 # succeed for the targets they can satisfy.
 
-.PHONY: all build test run clean lint fmt help \
+.PHONY: all build test run install clean lint fmt help \
         pebble-setup pebble-setup-clean \
-        companion-build companion-test companion-run companion-clean companion-lint companion-fmt \
-        watchapp-build watchapp-test watchapp-run watchapp-clean watchapp-lint watchapp-fmt
+        companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt \
+        watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt
 
 all: build
 
 help:
 	@echo "OpenPebbleRun build targets:"
-	@echo "  build              build both companion and watchapp"
+	@echo "  build              build both companion APK and watchapp .pbw"
+	@echo "  install            adb install companion + 'pebble install --phone' watchapp"
+	@echo "                     (requires PEBBLE_PHONE=<ip> in env for the watch)"
 	@echo "  test               run tests for both"
-	@echo "  run                install/run on connected device + watch"
+	@echo "  run                alias for install (watchapp launches on install)"
 	@echo "  clean              remove build artifacts"
 	@echo "  lint               run linters"
 	@echo "  fmt                apply formatters"
@@ -49,17 +51,18 @@ pebble-setup-clean:
 
 # === Aggregate targets ===
 
-build: companion-build watchapp-build
-test:  companion-test  watchapp-test
-run:   companion-run   watchapp-run
-clean: companion-clean watchapp-clean
-lint:  companion-lint  watchapp-lint
-fmt:   companion-fmt   watchapp-fmt
+build:   companion-build   watchapp-build
+test:    companion-test    watchapp-test
+install: companion-install watchapp-install
+run:     install
+clean:   companion-clean   watchapp-clean
+lint:    companion-lint    watchapp-lint
+fmt:     companion-fmt     watchapp-fmt
 
 # === Companion delegation ===
 # Static pattern rule: forces the recipe to run for each named phony target.
 
-companion-build companion-test companion-run companion-clean companion-lint companion-fmt: companion-% :
+companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt: companion-% :
 	@if [ ! -f companion/Makefile ]; then \
 	  echo "[skip] companion/Makefile not present yet ($*)"; \
 	else \
@@ -69,7 +72,7 @@ companion-build companion-test companion-run companion-clean companion-lint comp
 # === Watchapp delegation ===
 # `pebble` must be on PATH. If not, every target is a no-op skip.
 
-watchapp-build watchapp-test watchapp-run watchapp-clean watchapp-lint watchapp-fmt: watchapp-% :
+watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt: watchapp-% :
 	@if ! command -v pebble >/dev/null 2>&1; then \
 	  echo "[skip] pebble not on PATH — install Pebble SDK from https://help.rebble.io/sdk/ ($*)"; \
 	elif [ ! -f watchapp/Makefile ]; then \

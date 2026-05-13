@@ -4,7 +4,7 @@
 
 GRADLE ?= $(if $(wildcard ./gradlew),./gradlew,gradle)
 
-.PHONY: build test run clean lint fmt wrapper
+.PHONY: build test run install clean lint fmt wrapper
 
 build:
 	$(GRADLE) :app:assembleDebug
@@ -12,10 +12,14 @@ build:
 test:
 	$(GRADLE) :app:testDebugUnitTest
 
-run:
+install:
 	$(GRADLE) :app:installDebug
-	@echo "Installed. Launch from device or run:"
-	@echo "  adb shell am start -n run.openpebble.companion.debug/run.openpebble.companion.MainActivity"
+	@echo "Installed: run.openpebble.companion.debug"
+	@echo "  Launch via 'adb shell am start -n run.openpebble.companion.debug/run.openpebble.companion.MainActivity'"
+
+# `run` kept as an alias for backward-compatibility — semantically the same
+# (gradle's installDebug doesn't actually launch the app).
+run: install
 
 clean:
 	$(GRADLE) clean
