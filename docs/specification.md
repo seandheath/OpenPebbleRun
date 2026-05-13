@@ -217,16 +217,24 @@ Cache result in SharedPreferences. Re-probe `onResume`. No picker UI — first r
 
 ### 6.2 Dashboard API
 
-After `StartRecording`, OpenTracks invokes companion's Dashboard activity with content URIs (Tracks + TrackPoints) and `FLAG_GRANT_READ_URI_PERMISSION`.
+After `StartRecording` (with the *Automatic data transfer* toggle enabled — see §5.2.1), OpenTracks invokes companion's Dashboard activity with three content URIs packed in `intent.clipData` (`FLAG_GRANT_READ_URI_PERMISSION` set on all):
 
-**Track URI columns used** (read by name with `getColumnIndexOrThrow`):
-- `MOVINGTIME` (long, ms)
-- `TOTALDISTANCE` (float, meters)
+- `clipData[0]` — Track URI (`TracksColumns.CONTENT_URI` + appended id list)
+- `clipData[1]` — TrackPoints URI (`TrackPointsColumns.CONTENT_URI_BY_TRACKID` + ids)
+- `clipData[2]` — Markers URI (unused by this app)
+
+`intent.data` is **not** populated; ignore it.
+
+**Track URI columns used** (lowercase, read by name with `getColumnIndexOrThrow`):
+- `movingtime` (long, ms)
+- `totaldistance` (float, meters)
 
 **TrackPoints URI columns used:**
 - `speed` (float, m/s)
 - `time` (long, epoch ms)
-- `SENSOR_HEARTRATE` (float, bpm) — may be null if no strap paired
+- `sensor_heartrate` (float, bpm) — may be null if no strap paired
+
+Column identifiers are lowercase Java String constants in `TracksColumns.java` / `TrackPointsColumns.java`. SQLite is case-insensitive in unquoted SQL but Android's `Cursor.getColumnIndexOrThrow` is case-sensitive on most providers — uppercase names throw silently.
 
 Tolerate missing columns — OpenTracks's sensor schema evolves between versions (refactored in v4.26.0). Register `ContentObserver` on both URIs; recompute current pace on TrackPoints changes, recompute distance/time on Track changes.
 

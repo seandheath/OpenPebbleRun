@@ -62,8 +62,14 @@ class DashboardActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        trackUri = intent?.data
-        trackPointsUri = intent?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+        // OpenTracks ships URIs via clipData (`IntentDashboardUtils.startDashboard`):
+        //   clipData[0] = Track URI       (TracksColumns.CONTENT_URI / <ids>)
+        //   clipData[1] = TrackPoints URI (TrackPointsColumns.CONTENT_URI_BY_TRACKID / <ids>)
+        //   clipData[2] = Markers URI     (unused)
+        // intent.data is never populated — earlier code reading it always saw null.
+        val clip = intent?.clipData
+        trackUri       = clip?.takeIf { it.itemCount >= 1 }?.getItemAt(0)?.uri
+        trackPointsUri = clip?.takeIf { it.itemCount >= 2 }?.getItemAt(1)?.uri
 
         Log.d(TAG, "onCreate trackUri=$trackUri trackPointsUri=$trackPointsUri")
 
@@ -189,13 +195,18 @@ class DashboardActivity : ComponentActivity() {
     companion object {
         private const val TAG = "DashboardActivity"
 
-        // Column names per spec §6.2. Capitalization matches OpenTracks's schema
-        // (Track table uses UPPER_SNAKE; TrackPoints uses lowercase `speed`/`time`).
-        private const val COL_MOVING_TIME      = "MOVINGTIME"
-        private const val COL_TOTAL_DISTANCE   = "TOTALDISTANCE"
+        // Column names — ALL lowercase. Spec §6.2 had them as UPPER_SNAKE; that
+        // was wrong. OpenTracks declares these in TracksColumns.java and
+        // TrackPointsColumns.java as lowercase Java String constants; SQLite is
+        // case-insensitive in unquoted SQL but Android's
+        // Cursor.getColumnIndexOrThrow is case-sensitive on most providers, so
+        // upper-case names threw IllegalArgumentException → silently caught →
+        // null reads → all-zero metrics on the watch.
+        private const val COL_MOVING_TIME      = "movingtime"
+        private const val COL_TOTAL_DISTANCE   = "totaldistance"
         private const val COL_SPEED            = "speed"
         private const val COL_TIME             = "time"
-        private const val COL_SENSOR_HEARTRATE = "SENSOR_HEARTRATE"
+        private const val COL_SENSOR_HEARTRATE = "sensor_heartrate"
     }
 }
 

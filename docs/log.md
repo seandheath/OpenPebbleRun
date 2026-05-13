@@ -66,6 +66,16 @@ quick.
 **Rationale:** Spec §4.1 targets the `emery` platform (Pebble Time 2) which is only supported by the CoreDevices pebble-tool fork. pebble.nix already wraps both upstream and CoreDevices toolchains and ships a binary cache (`cachix use pebble`), so users skip a ~30-minute toolchain rebuild. Single composed dev shell beats two-shell juggling.
 **Alternatives considered:** Vendor the Pebble SDK ourselves (rejected — that's pebble.nix's job and they do it better). Manual install instructions in README (rejected — workflow friction discouraged contributors).
 
+## 2026-05-13 — Dashboard URI delivery + column-name corrections
+
+**Discoveries from first end-to-end test:**
+
+1. **URI shape.** Earlier the log flagged the `intent.data` + `intent.clipData[0]` layout as a guess. Actual delivery (per `IntentDashboardUtils.startDashboard` in OpenTracks): all three URIs ride in `intent.clipData` — `[0]` is Track, `[1]` is TrackPoints, `[2]` is Markers. `intent.data` is never populated. `DashboardActivity` now reads `clipData[0..1]`.
+
+2. **Column-name case.** Spec §6.2 had `MOVINGTIME`, `TOTALDISTANCE`, `SENSOR_HEARTRATE` (UPPER_SNAKE). OpenTracks's `TracksColumns.java` / `TrackPointsColumns.java` declare them as **lowercase** Java string constants (`movingtime`, `totaldistance`, `sensor_heartrate`). SQLite is case-insensitive in unquoted SQL, but Android's `Cursor.getColumnIndexOrThrow` is case-sensitive on most ContentProvider implementations — so uppercase requests threw `IllegalArgumentException`, our defensive try/catch swallowed it, every `longOrNull`/`floatOrNull` returned null → watch saw zero/missing for every metric even when the track was recording. Spec §6.2 and `DashboardActivity`'s constants are now lowercase.
+
+Both fixes verified against the upstream files (`pebble-dev/.../IntentDashboardUtils.java` and `OpenTracksApp/.../TrackPointsColumns.java` on `main` as of 2026-05-13).
+
 ## 2026-05-13 — OpenTracks gates dashboard callback behind a second toggle
 
 **Discovery:** OpenTracks's Public API settings expose two switches, not one:
