@@ -87,7 +87,14 @@ object PebbleMessenger {
             paceSecPerMile?.let {
                 put(Keys.PACE_CURRENT, PebbleDictionaryItem.UInt16(it.coerceIn(0, 3600)))
             }
-            put(Keys.TIME, PebbleDictionaryItem.UInt32(timeSec.coerceAtLeast(0L)))
+            // Skip TIME=0: OpenTracks's `movingtime` is 0 while it has no GPS
+            // fix yet, but the watch is already running its own 1 Hz local
+            // counter — a TIME=0 push here would snap the watch back to 0:00
+            // every 5 s. Only forward a value once OpenTracks has real elapsed
+            // time; the watch advances on its own meanwhile.
+            if (timeSec > 0) {
+                put(Keys.TIME, PebbleDictionaryItem.UInt32(timeSec))
+            }
             put(Keys.DISTANCE, PebbleDictionaryItem.UInt32(distHundredthsMile.coerceAtLeast(0L)))
         }
         send(context, dict)
@@ -108,6 +115,8 @@ object PebbleMessenger {
             Log.d(TAG, "Pebble app not reachable; dropping ${dict.keys}")
             return
         }
+        // Non-success results aren't user-actionable mid-run. Spec §8.1 says
+        // dim-on-stale is the watch's job. Log for debugging only.
         // Non-success results aren't user-actionable mid-run. Spec §8.1 says
         // dim-on-stale is the watch's job. Log for debugging only.
         for ((watch, tr) in result) {
