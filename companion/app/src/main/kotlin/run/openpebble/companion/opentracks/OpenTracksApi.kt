@@ -32,6 +32,14 @@ object OpenTracksApi {
     private const val ACTION_START = "de.dennisguse.opentracks.publicapi.StartRecording"
     private const val ACTION_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
 
+    // OpenTracks's publicapi activities live at FIXED FQCNs regardless of the
+    // variant (`playstore`, `debug`, `nightly` are applicationId *suffixes*,
+    // not source-package changes). Spec §6.1 writes the Component as
+    // "<package>/de.dennisguse.opentracks.publicapi.StartRecording" — the
+    // path after the slash is the literal activity class path.
+    private const val CLASS_START = "de.dennisguse.opentracks.publicapi.StartRecording"
+    private const val CLASS_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
+
     // Extras (string keys mirror spec §6.1).
     private const val EXTRA_TRACK_NAME           = "TRACK_NAME"
     private const val EXTRA_TRACK_CATEGORY       = "TRACK_CATEGORY"
@@ -46,7 +54,7 @@ object OpenTracksApi {
      */
     fun startRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_START).apply {
-            component = ComponentName(variantPackage, "$variantPackage.publicapi.StartRecording")
+            component = ComponentName(variantPackage, CLASS_START)
             putExtra(EXTRA_TRACK_NAME, "Run")
             putExtra(EXTRA_TRACK_CATEGORY, "running")
             putExtra(EXTRA_TRACK_ICON, "running")
@@ -69,7 +77,7 @@ object OpenTracksApi {
     /** Send a StopRecording Intent. Mirrors [startRecording] semantics. */
     fun stopRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_STOP).apply {
-            component = ComponentName(variantPackage, "$variantPackage.publicapi.StopRecording")
+            component = ComponentName(variantPackage, CLASS_STOP)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
