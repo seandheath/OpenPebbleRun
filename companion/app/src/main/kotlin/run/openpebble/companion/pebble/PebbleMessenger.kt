@@ -73,7 +73,7 @@ object PebbleMessenger {
      * Spec §7 keys 120/122/123: live metrics from OpenTracks. Pace is omitted
      * when null (treated as "stopped" — watch renders "--:--").
      *
-     * - paceSecPerMile: capped at 3600 by caller (PaceWindow does this).
+     * - paceSecPerMile: capped at 3600 by caller (TrackStats.paceFromSpeed).
      * - timeSec:        Track.MOVINGTIME / 1000.
      * - distHundredthsMile: meters → hundredths-of-a-mile (TrackStats).
      */

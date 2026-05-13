@@ -13,7 +13,6 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
-import run.openpebble.companion.metrics.PaceWindow
 import run.openpebble.companion.metrics.TrackStats
 import run.openpebble.companion.pebble.PebbleMessenger
 import run.openpebble.companion.pebble.RunSession
@@ -21,25 +20,34 @@ import run.openpebble.companion.pebble.RunSession
 /**
  * OpenTracks Dashboard receiver. Spec §6.2.
  *
- * OpenTracks invokes us after StartRecording with two content URIs:
- *   - Track URI       (intent.data) — single row, columns include MOVINGTIME, TOTALDISTANCE
- *   - TrackPoints URI (intent.clipData[0]) — many rows, columns include speed, time, SENSOR_HEARTRATE
+ * Verified against OpenTracks v4.27.0 (`DataProvider.java`,
+ * `CustomContentProvider.java`):
  *
- * Both arrive with FLAG_GRANT_READ_URI_PERMISSION and remain valid for the
- * lifetime of this activity (or until the grant is revoked when OpenTracks
- * stops recording).
+ *  - All three URIs ride in `intent.clipData` — `[0]` Track, `[1]` TrackPoints,
+ *    `[2]` Markers. `intent.data` is unused.
+ *  - The dashboard URIs are explicit `/dashboard/...` paths, distinct from the
+ *    internal `/trackpoints/trackid/...` URIs (the dashboard provider applies
+ *    `DataProvider.DATA_PROJECTIONMAP_*` to expose a restricted column set).
+ *  - TrackPoints projection in v4.27 is `_id, trackid, latitude, longitude,
+ *    time, type, speed` — no `sensor_heartrate`, no `sensor_cadence`. HR/
+ *    cadence won't come through this URI; spec §4.3's external-HR-via-
+ *    OpenTracks path needs revisiting (filed as a TODO in docs/log.md).
+ *  - The TrackPoints URI typically holds a single SEGMENT_START_MANUAL marker
+ *    (`type = -2`, `speed = null`) until the device has moved past OpenTracks's
+ *    min-distance-from-previous threshold. So the first samples come through
+ *    as null `speed` — we render "--:--" in that case and let real data take
+ *    over once OpenTracks inserts a normal TrackPoint.
  *
- * Lifecycle role in step 5+:
- *  - onCreate sends RUN_STARTED to the watch (the canonical "OpenTracks really
- *    started" signal — see PebbleListenerService class header for why we don't
- *    send it on CMD_START receipt).
- *  - Each ContentObserver notification recomputes pace/time/distance and pushes
- *    them to the watch via PebbleMessenger.
+ * Lifecycle role:
+ *  - onCreate sends RUN_STARTED to the watch (canonical "OpenTracks really
+ *    started" signal — see PebbleListenerService class header).
+ *  - ContentObserver notifications recompute pace/time/distance and push to
+ *    the watch via PebbleMessenger.
  *  - onDestroy clears RunSession and closes PebbleMessenger.
  *
  * UI: minimalist "Recording — see your watch" text. The watch is the primary
  * surface during a run; this screen exists only so the activity has somewhere
- * to live (Spec §5.1 prohibits foreground services, so observation rides this
+ * to live (spec §5.1 prohibits foreground services, so observation rides this
  * activity's lifecycle).
  */
 class DashboardActivity : ComponentActivity() {
@@ -48,9 +56,6 @@ class DashboardActivity : ComponentActivity() {
     private var trackPointsUri: Uri? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    // PaceWindow is mutated only from the observer thread (main looper here).
-    private val paceWindow = PaceWindow()
 
     private val trackObserver = object : ContentObserver(mainHandler) {
         override fun onChange(selfChange: Boolean) = readTrack()
@@ -151,39 +156,25 @@ class DashboardActivity : ComponentActivity() {
     }
 
     /**
-     * Read the latest TrackPoint row, push its speed into [paceWindow], cache
-     * the current pace, and send the combined metric snapshot to the watch.
-     * SENSOR_HEARTRATE is logged here but the external-HR forwarding state
-     * machine (spec §4.3) lands in step 8.
+     * Read the latest TrackPoint row and convert its `speed` to pace.
+     *
+     * OpenTracks v4.27's dashboard URI exposes only `_id, trackid, latitude,
+     * longitude, time, type, speed`. Until the device has moved past
+     * OpenTracks's min-distance-from-previous threshold, the cursor holds a
+     * single SEGMENT_START marker with `speed = null` — [TrackStats.paceFromSpeed]
+     * returns null in that case and the watch renders "--:--" until a real
+     * TrackPoint lands.
      */
     private fun readLatestTrackPoint() {
         val uri = trackPointsUri ?: return
         contentResolver.query(uri, null, null, null, "$COL_TIME DESC")?.use { c ->
-            // Diagnostic: log count + first-row snapshot on every fire so we
-            // can see whether OpenTracks v4.27's dashboard URI updates the row
-            // in place, grows the row set, or stays static.
-            val firstRow = if (c.moveToFirst()) buildString {
-                for (i in 0 until c.columnCount) {
-                    if (i > 0) append(", ")
-                    append(c.getColumnName(i)).append("=")
-                    append(if (c.isNull(i)) "null" else runCatching { c.getString(i) }.getOrDefault("?"))
-                }
-            } else "(empty)"
-            Log.d(TAG, "TrackPoints[count=${c.count}] $firstRow")
             if (!c.moveToFirst()) return@use
             val speed = c.floatOrNull(COL_SPEED)
             val time = c.longOrNull(COL_TIME)
-            val hr = c.floatOrNull(COL_SENSOR_HEARTRATE)
-
-            if (time != null && speed != null) {
-                paceWindow.push(time, speed)
-            }
-            val nowMs = time ?: System.currentTimeMillis()
-            lastPaceSecPerMile = paceWindow.paceSecPerMile(nowMs)
-
+            lastPaceSecPerMile = TrackStats.paceFromSpeed(speed)
             Log.d(TAG,
-                "TrackPoint  time=$time  speed=${speed}m/s  hr=$hr  " +
-                "pace=${lastPaceSecPerMile?.let { "${it}sec/mi" } ?: "—"}")
+                "TrackPoint  time=$time  speed=${speed}m/s  " +
+                "pace=${lastPaceSecPerMile?.let { "${it}sec/mi" } ?: "--:--"}")
         }
         pushMetrics()
     }
@@ -206,18 +197,19 @@ class DashboardActivity : ComponentActivity() {
     companion object {
         private const val TAG = "DashboardActivity"
 
-        // Column names — ALL lowercase. Spec §6.2 had them as UPPER_SNAKE; that
-        // was wrong. OpenTracks declares these in TracksColumns.java and
-        // TrackPointsColumns.java as lowercase Java String constants; SQLite is
-        // case-insensitive in unquoted SQL but Android's
-        // Cursor.getColumnIndexOrThrow is case-sensitive on most providers, so
-        // upper-case names threw IllegalArgumentException → silently caught →
-        // null reads → all-zero metrics on the watch.
-        private const val COL_MOVING_TIME      = "movingtime"
-        private const val COL_TOTAL_DISTANCE   = "totaldistance"
-        private const val COL_SPEED            = "speed"
-        private const val COL_TIME             = "time"
-        private const val COL_SENSOR_HEARTRATE = "sensor_heartrate"
+        // Column names — ALL lowercase. SQLite is case-insensitive in unquoted
+        // SQL but Android's Cursor.getColumnIndexOrThrow is case-sensitive on
+        // most providers, so upper-case names threw IllegalArgumentException →
+        // silently caught → null reads → all-zero metrics on the watch.
+        //
+        // sensor_heartrate / sensor_cadence are intentionally absent: v4.27's
+        // dashboard URI projects only the basic GPS columns. Strap HR via
+        // OpenTracks (spec §4.3 step 8) needs a different mechanism — see
+        // docs/log.md TODO.
+        private const val COL_MOVING_TIME    = "movingtime"
+        private const val COL_TOTAL_DISTANCE = "totaldistance"
+        private const val COL_SPEED          = "speed"
+        private const val COL_TIME           = "time"
     }
 }
 

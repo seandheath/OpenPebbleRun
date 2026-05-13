@@ -175,13 +175,13 @@ Companion derives metrics from OpenTracks Dashboard URIs and pushes to watch.
 
 | Key | Metric | Source | Format |
 |---|---|---|---|
-| 120 | Pace (current) | 15s rolling mean of TrackPoints `speed` (m/s) → sec/mi, capped at 3600 | uint16 sec/mi |
-| 122 | Time | Track `MOVINGTIME` (ms) → seconds | uint32 sec |
-| 123 | Distance | Track `TOTALDISTANCE` (m) → hundredths of a mile | uint32 |
+| 120 | Pace (current) | TrackPoint `speed` (m/s) → `1609.344 / speed` → sec/mi, capped at 3600 | uint16 sec/mi |
+| 122 | Time | Track `movingtime` (ms) → seconds | uint32 sec |
+| 123 | Distance | Track `totaldistance` (m) → hundredths of a mile | uint32 |
 
-Update on each Dashboard `ContentObserver` notification.
+Update on each Dashboard `ContentObserver` notification. Pace uses OpenTracks's reported `speed` directly — no smoothing window. When OpenTracks's dashboard cursor holds only a SEGMENT_START marker (`type = -2`, `speed = null`), pace is null and the watch renders `--:--`; once OpenTracks inserts a normal TrackPoint with a non-null `speed`, the watch updates.
 
-HR and cadence normally come from the watch and are displayed there directly. **Exception**: when companion detects external HR via OpenTracks `SENSOR_HEARTRATE` (BLE strap paired to OpenTracks), companion forwards HR to watch as `HR_EXTERNAL` (key 124) and the watch disables its internal HRM. See §4.3 for the detection state machine. In this case HR is recorded in the OpenTracks GPX automatically (because OpenTracks itself receives it from the strap).
+HR and cadence normally come from the watch and are displayed there directly. **Caveat (v4.27)**: OpenTracks's dashboard `DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS` projects only `_id, trackid, latitude, longitude, time, type, speed` — `sensor_heartrate` and `sensor_cadence` are no longer exposed. Spec §4.3's external-HR-via-OpenTracks state machine cannot be implemented over the dashboard URI on v4.27+. A different mechanism is required (e.g., the watchapp consuming HR from a BLE strap directly, or the phone proxying via a separate intent); revisit when scheduling step 8.
 
 ### 5.4 OpenTracks variant detection
 

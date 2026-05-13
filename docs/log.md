@@ -66,6 +66,25 @@ quick.
 **Rationale:** Spec §4.1 targets the `emery` platform (Pebble Time 2) which is only supported by the CoreDevices pebble-tool fork. pebble.nix already wraps both upstream and CoreDevices toolchains and ships a binary cache (`cachix use pebble`), so users skip a ~30-minute toolchain rebuild. Single composed dev shell beats two-shell juggling.
 **Alternatives considered:** Vendor the Pebble SDK ourselves (rejected — that's pebble.nix's job and they do it better). Manual install instructions in README (rejected — workflow friction discouraged contributors).
 
+## 2026-05-13 — Spec §5.3 pace: OpenTracks speed direct, no smoothing window
+
+**Decision:** Drop `PaceWindow.kt` and the 15s rolling-mean approach. Compute current pace as `1609.344 / speed` (sec/mi) from the latest TrackPoint's `speed` column directly. When `speed` is null or non-positive, return null → watch renders `--:--`. The new helper is `TrackStats.paceFromSpeed`.
+**Rationale:** Two reasons. First, OpenTracks's TrackRecordingService applies its own filtering before inserting TrackPoints (min-distance-from-previous, accuracy thresholds) — by the time a row hits the dashboard URI it's already curated, so additional smoothing on our side is duplicative. Second, the 15s window introduced complexity (sample buffer, trimming, time alignment) that didn't justify itself when OpenTracks is the canonical source of truth; the spec writer was preempting an unproven concern. If GPS speed jitter ever becomes a visible problem on the watch, restore the window later — but the *default* should be "show what OpenTracks reports."
+**Side effect:** Until OpenTracks inserts a non-segment-marker TrackPoint with non-null `speed`, the watch shows `--:--`. Spec §11 already accepts that the watch displays `0:00` / `0.00 mi` / `--:--` for the early seconds of a run; this is consistent.
+**Alternatives considered:** Track-level pace deltas (recompute pace = Δdistance / Δmovingtime across consecutive Track observer fires). Rejected — gives a derived metric that diverges from what users see in OpenTracks itself, breaks "OpenTracks is source of truth."
+
+## 2026-05-13 — OpenTracks v4.27 dashboard API: DataProvider, /dashboard/ URIs, slim projection
+
+**Discovery:** Sean's installed OpenTracks (v4.27.0, Codeberg) introduced a new `DataProvider` class that replaces `IntentDashboardUtils`. The dashboard URI scheme is now `/dashboard/tracks/<ids>`, `/dashboard/trackpoints/<ids>`, `/dashboard/markers/<ids>` (vs. the legacy `/tracks/<ids>`, `/trackpoints/trackid/<ids>`). v4.27 source: `codeberg.org/OpenTracksApp/OpenTracks/raw/tag/v4.27.0/src/main/java/de/dennisguse/opentracks/publicapi/DataProvider.java`.
+**Key facts:**
+- The provider applies strict projection maps (`DATA_PROJECTIONMAP_TRACKS`, `DATA_PROJECTIONMAP_TRACKPOINTS`) to filter columns. Both V2 (`movingtime`, `totaldistance`) and V3 (`duration_moving`, `distance`) column aliases are present; we use V2 names.
+- TrackPoints projection in v4.27 is **`_id, trackid, latitude, longitude, time, type, speed`** — no `sensor_heartrate`, no `sensor_cadence`, no `accuracy`, no `altitude`. Spec §4.3 step-8 (HR from BLE strap via OpenTracks) is **not feasible** on v4.27 through this URI. TODO below.
+- TrackPoints cursor typically holds only a `SEGMENT_START_MANUAL` row (`type=-2`, `speed=null`) until the device has moved past OpenTracks's "min recording distance" threshold — explains the `count=1` we saw with `speed=null` on first end-to-end test.
+
+**OpenTracks project home moved**: from GitHub `OpenTracksApp/OpenTracks` (still mirrored, last tagged v4.22.0 Aug 2025) to Codeberg `OpenTracksApp/OpenTracks` (active, current tags through v4.27.0). docs/specification.md §6.2 references the Codeberg source going forward.
+
+<!-- TODO:FEATURE — spec §4.3 step-8 (external HR via OpenTracks) needs redesign for v4.27+ — dashboard URI no longer projects sensor_heartrate -->
+
 ## 2026-05-13 — Dashboard URI delivery + column-name corrections
 
 **Discoveries from first end-to-end test:**
