@@ -53,11 +53,22 @@ class PebbleListenerService : BasePebbleListenerService() {
         }
     }
 
+    /**
+     * Resolve the OpenTracks variant package. Tries the SharedPreferences cache
+     * first (populated by MainActivity), then falls back to a live PackageManager
+     * probe. The probe is cheap (four `getPackageInfo` lookups) and also refreshes
+     * the cache as a side-effect — so a watch-initiated CMD_START works even
+     * when the user has never opened the companion app, which is the canonical
+     * UX (the watch is the control surface).
+     */
+    private fun resolveVariant(): String? =
+        OpenTracksVariant.cached(this) ?: OpenTracksVariant.detect(this).pkg
+
     private fun handleStart(): ReceiveResult {
-        val pkg = OpenTracksVariant.cached(this) ?: run {
-            Log.w(TAG, "CMD_START but no OpenTracks variant cached — open the companion app once to probe")
-            // Coroutine launch fire-and-forget: tell the watch we couldn't start
-            // so its "Starting…" UI doesn't sit on the 15 s timeout.
+        val pkg = resolveVariant() ?: run {
+            Log.w(TAG, "CMD_START but no OpenTracks variant installed")
+            // Fire-and-forget RUN_FAILED so the watch doesn't sit on the 15 s
+            // "Starting…" timeout when we know it'll never succeed.
             coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
             return ReceiveResult.Nack
         }
@@ -73,7 +84,7 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     private fun handleStop(): ReceiveResult {
-        val pkg = OpenTracksVariant.cached(this) ?: return ReceiveResult.Nack
+        val pkg = resolveVariant() ?: return ReceiveResult.Nack
         Log.d(TAG, "CMD_STOP → stopRecording($pkg)")
         OpenTracksApi.stopRecording(this, pkg)
         return ReceiveResult.Ack
