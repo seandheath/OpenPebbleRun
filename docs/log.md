@@ -257,6 +257,23 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-13 — Walk back "launch into active-run"; add minimal idle screen
+
+**Decision:** Add `screens/idle.{c,h}` — a two-line screen ("OpenPebbleRun" / "Start a run on your phone") that is the watchapp's launch entry point. Its inbox handler watches for `RUN_STARTED` and pushes active-run on top when one arrives. `main.c` now calls `idle_show()` instead of `active_run_show()`.
+
+**Rationale:** Earlier today the watchapp was wired to launch directly into active-run on the assumption that placeholders ("---", "0.00", "0:00") would be acceptable in the "no run active" state. Manual testing on hardware proved otherwise — `pebble install` auto-launches the watchapp, and the user immediately sees what looks like a stuck/broken run-stats display. The idle screen with explicit prompt text makes the "nothing is happening yet, do this next" state unambiguous. The transition path is the same as the deleted pre-run handled (inbox watches RUN_STARTED → push active-run), minus the obsolete Select-to-start state machine.
+
+**Implementation notes:**
+- Idle screen is essentially pre-run minus IDLE→STARTING and the ERROR/timeout states. No `CMD_START` is ever sent.
+- Inbox handler installed synchronously in `idle_show` to win the companion-start race (same fix the deleted pre_run.c carried; failure mode is identical).
+- `active_run.h` docstring walked back from "watchapp entry point" to "pushed by idle when RUN_STARTED arrives".
+- Spec §4.2 reverted from "Three screens, launch on active-run" to "Four screens, launch on idle"; §4.2.1 re-introduced with the new idle definition; §5.1 and §11 wording updated accordingly.
+
+**Alternatives reconsidered:**
+- *Keep launching into active-run* — original v0.1 design; the placeholder state looks broken in practice (user-reported).
+- *Auto-exit if no run within 3 s of launch* — surprising UX, and a quick `pebble install` launch would close itself before the user even sees it.
+- *Resurrect pre-run with state machine intact* — drags back the IDLE/STARTING/ERROR/timeout state and the dead `CMD_START` path. Idle is just the useful subset.
+
 ## 2026-05-13 — Iconographic stop buttons + remove pre-run screen
 
 **Decision:** Stop entry on active-run moves from Select to **Down**, with a small filled-square stop-icon hint painted at the right edge of the screen vertically aligned with the physical Down button. Stop-confirm uses **Up = ✓ / Down = ✕** at the right edge (Back mirrors Down for Pebble's "Back = go back" convention; Select is a no-op). Run-summary's **Back** exits the watchapp entirely (`window_stack_pop_all`) and Select/Up/Down are ignored. The pre-run "Press Select to start" screen is **deleted** — the watchapp launches straight into active-run, and `pre_run.{c,h}` are removed.

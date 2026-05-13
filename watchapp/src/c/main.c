@@ -1,35 +1,37 @@
 /*
  * OpenPebbleRun watchapp entry point. Spec §4.
  *
- * v0.1 flow: launch lands directly on the active-run screen — runs are
- * started from the companion phone app (spec §5.2.2, §11), so there's no
- * watch-side "press Select to start" affordance any more. If no run is
- * active when the user manually launches the app, active-run renders its
- * placeholder values ("---") and dims after 30 s of inbox silence. If a run
- * *is* active, the companion's PebbleListenerService.onAppOpened replays
- * RUN_STARTED on app launch and the poll loop's next tick populates the
- * metrics.
+ * v0.1 flow: launch lands on the idle screen ("OpenPebbleRun" + "Start a run
+ * on your phone"). The idle screen's inbox handler watches for RUN_STARTED;
+ * on arrival it pushes active-run on top. If the user opens the watchapp
+ * while a run is already active, the companion's
+ * PebbleListenerService.onAppOpened replays RUN_STARTED almost immediately,
+ * so the idle screen is effectively transient in that case.
  *
  * On any exit path, heart-rate sampling must be turned off (spec §4.3) to
- * stop battery drain — handled here in `deinit` so it covers normal exit and
- * window-stack-pop alike. active_run.c's window_unload already unsubscribes;
- * the duplicate call here is idempotent and guards against future refactors.
+ * stop battery drain — handled here in `deinit` so it covers every code
+ * path. active_run.c's window_unload also unsubscribes; the duplicate call
+ * here is idempotent and guards against future refactors that bypass it.
  */
 
 #include <pebble.h>
 #include "app_message.h"
+#include "screens/idle.h"
 #include "screens/active_run.h"
 
 static void init(void) {
     app_message_init();
-    active_run_show();
+    idle_show();
 }
 
 static void deinit(void) {
     // Spec §4.3: "On any exit path: health_service_set_heart_rate_sample_period(0)".
-    // Idempotent — active_run's window_unload also calls this.
+    // Idempotent — active_run's window_unload also calls this when it runs.
     health_service_set_heart_rate_sample_period(0);
 
+    // Tear down both screen modules. Either may hold a live Window pointer
+    // depending on whether the user ever transitioned to active-run.
+    idle_hide();
     active_run_hide();
     app_message_deinit();
 }

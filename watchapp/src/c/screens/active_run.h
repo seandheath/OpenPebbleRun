@@ -1,13 +1,11 @@
 /*
  * Active-run screen. Spec §4.2.2.
  *
- * Watchapp entry point (post-v0.1 — pre-run was removed when runs moved to
- * companion-initiated; see docs/log.md). Launch lands here; if no run is
- * active the metric cells render their placeholders ("---", "0.00", "0:00")
- * and dim after 30 s of inbox silence (spec §8.1). If a run *is* active,
- * the companion's PebbleListenerService.onAppOpened replays RUN_STARTED
- * (silently ignored by our inbox handler — we're already on the right
- * screen) and the next poll-loop tick populates the cells.
+ * Pushed by the idle screen (§4.2.1) when its inbox handler receives
+ * RUN_STARTED. The watchapp does *not* launch directly into this screen —
+ * a run-stats display with "---" placeholders looks broken when nothing is
+ * actually being recorded, so idle stays on screen until the companion
+ * confirms a run is active.
  *
  * 200×228 emery layout, three rows:
  *   HEART RATE       (large)   ### bpm
