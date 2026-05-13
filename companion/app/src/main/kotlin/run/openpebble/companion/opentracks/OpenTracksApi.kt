@@ -13,8 +13,13 @@ import run.openpebble.companion.DashboardActivity
  * activities. Intent extras drive track naming and the Dashboard callback.
  *
  * Naming / categorization:
- *  - TRACK_NAME     = "Run"        (no template — keep simple per spec)
- *  - TRACK_CATEGORY = "running"
+ *  - TRACK_NAME     — intentionally NOT set. OpenTracks has its own "Default
+ *                     track name" ListPreference (Settings → Recording → Default
+ *                     track name; options: Date ISO 8601 / Date local / Number)
+ *                     which applies when the extra is absent. SharedPreferences
+ *                     aren't readable from third-party apps, so deferring is the
+ *                     only way to honor the user's choice. Spec §5.2.2.
+ *  - TRACK_CATEGORY = "running"   (OpenTracks has no default-category pref)
  *  - TRACK_ICON     = "running"
  *
  * Dashboard callback (spec §6.1, §6.2):
@@ -44,8 +49,8 @@ object OpenTracksApi {
     private const val CLASS_START = "de.dennisguse.opentracks.publicapi.StartRecording"
     private const val CLASS_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
 
-    // Extras (string keys mirror spec §6.1).
-    private const val EXTRA_TRACK_NAME           = "TRACK_NAME"
+    // Extras (string keys mirror spec §6.1). TRACK_NAME is intentionally
+    // omitted from the dispatched Intent — see class header for rationale.
     private const val EXTRA_TRACK_CATEGORY       = "TRACK_CATEGORY"
     private const val EXTRA_TRACK_ICON           = "TRACK_ICON"
     private const val EXTRA_STATS_TARGET_PACKAGE = "STATS_TARGET_PACKAGE"
@@ -60,7 +65,6 @@ object OpenTracksApi {
     fun startRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_START).apply {
             component = ComponentName(variantPackage, CLASS_START)
-            putExtra(EXTRA_TRACK_NAME, "Run")
             putExtra(EXTRA_TRACK_CATEGORY, "running")
             putExtra(EXTRA_TRACK_ICON, "running")
             putExtra(EXTRA_STATS_TARGET_PACKAGE, context.packageName)

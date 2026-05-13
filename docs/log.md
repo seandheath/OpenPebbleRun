@@ -257,6 +257,24 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
+
+**Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
+
+**Rationale:** One-tap "start the run and put the phone away" UX — previously the user landed on the companion's idle Home screen and had to navigate to OpenTracks manually to confirm recording was actually running. Deferring the track name to OpenTracks's setting respects the user's configuration without requiring privileged SharedPreference reads (a third-party app cannot read another app's `SharedPreferences` on modern Android; OpenTracks does not expose its preferences via a ContentProvider).
+
+**Implementation notes:**
+- `OpenTracksApi.kt`: removed `EXTRA_TRACK_NAME` constant and the `putExtra` line. Class header docstring updated to explain the omission.
+- `MainActivity.onStartTapped`: appended `OpenTracksApi.openApp(this@MainActivity, pkg)` after `startRecording`. Log message updated to reflect the third action.
+- Spec §5.2.2 updated with the three-step Start Run flow and the track-name rationale.
+- `openApp` was already defined and used by `FirstLaunchScreen`'s "Open OpenTracks settings" button; no helper changes.
+
+**Alternatives considered:**
+- *Pass ISO 8601 explicitly from companion* — overrides whatever the user configured in OpenTracks's settings.
+- *Pass localized date from companion* — same problem; locale-coupled which complicates testing.
+- *Read OpenTracks's `track_name_key` SharedPreference via reflection or a content provider hack* — preferences are private; fragile, version-coupled.
+- *Launch `de.dennisguse.opentracks.TrackRecordingActivity` directly* — that activity is not exported by OpenTracks (no intent-filter); only `publicapi.StartRecording` / `StopRecording` / `CreateMarker` are. The launcher Intent + OpenTracks's own resume-active-recording behavior is the supported path.
+
 ## 2026-05-13 — Walk back "launch into active-run"; add minimal idle screen
 
 **Decision:** Add `screens/idle.{c,h}` — a two-line screen ("OpenPebbleRun" / "Start a run on your phone") that is the watchapp's launch entry point. Its inbox handler watches for `RUN_STARTED` and pushes active-run on top when one arrives. `main.c` now calls `idle_show()` instead of `active_run_show()`.

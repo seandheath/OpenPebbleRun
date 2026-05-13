@@ -174,22 +174,32 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Driven by the Home screen's Start Run button. Two-step:
+     * Driven by the Home screen's Start Run button. Three-step:
      *  1. Launch our watchapp on the Pebble via PebbleKit's `startAppOnTheWatch`
      *     so the user doesn't have to open it manually. No-op if already open.
      *  2. Fire StartRecording to OpenTracks from this Activity's foreground
      *     context (no BAL issue). OpenTracks calls DashboardActivity back,
      *     which sets RunSession.active=true and sends RUN_STARTED. The
-     *     watchapp (now open on pre-run IDLE) accepts RUN_STARTED and
-     *     transitions to the active-run window.
+     *     watchapp's idle screen accepts RUN_STARTED and transitions to
+     *     active-run.
+     *  3. Foreground OpenTracks itself so the phone shows its live
+     *     run-stats view — one-tap "start the run and put the phone away"
+     *     UX. OpenTracks's main activity binds to TrackRecordingService on
+     *     resume and surfaces the active recording automatically.
      */
     private fun onStartTapped() {
         val pkg = detection.pkg ?: return
-        Log.d(TAG, "Start Run → openAppOnWatch + startRecording($pkg)")
+        Log.d(TAG, "Start Run → openAppOnWatch + startRecording + openOpenTracks($pkg)")
         lifecycleScope.launch {
             run.openpebble.companion.pebble.PebbleMessenger
                 .startWatchapp(this@MainActivity)
             OpenTracksApi.startRecording(this@MainActivity, pkg)
+            // After dispatching StartRecording (a NoDisplay-themed Activity
+            // that finishes immediately), bring OpenTracks's main UI to the
+            // foreground. The launcher Intent goes through ActivityManager
+            // async; OpenTracks's MainActivity observes recording state on
+            // bind, so even a momentary race resolves within a frame.
+            OpenTracksApi.openApp(this@MainActivity, pkg)
         }
     }
 

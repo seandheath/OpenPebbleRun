@@ -245,6 +245,10 @@ Steady-state. Shown after first-launch.
 - No settings, no troubleshoot, no run history. (Use OpenTracks for history.)
 - While a run is active, an ongoing notification ("Recording — see your watch") is shown in the shade. Tapping it opens this Home screen.
 
+**Start Run side effects.** Tapping the button triggers, in order: (1) launch the watchapp on the Pebble (`PebbleKit startAppOnTheWatch`), (2) fire OpenTracks's `publicapi.StartRecording` Intent, (3) fire OpenTracks's package launcher Intent to bring the recording UI to the foreground on the phone. Step (3) is the "one-tap start and put the phone away" affordance — without it, the user lands on the companion's Home screen and has to navigate to OpenTracks manually to confirm recording.
+
+**Track name.** The companion does not set `TRACK_NAME` on the StartRecording Intent. OpenTracks's own "Default track name" preference applies (Settings → Recording → Default track name; options: Date ISO 8601 / Date local / Number). This honors the user's configured choice without requiring SharedPreferences reads — which third-party apps can't do. `TRACK_CATEGORY` and `TRACK_ICON` are still set to `"running"` (OpenTracks has no equivalent default-category preference).
+
 ### 5.3 Computed metrics
 
 Companion derives metrics from OpenTracks Dashboard URIs and pushes to watch.
