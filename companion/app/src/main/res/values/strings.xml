@@ -2,11 +2,12 @@
 <resources>
     <string name="app_name">OpenPebbleRun</string>
     <string name="dashboard_label">OpenPebbleRun Run Stats</string>
+    <string name="dashboard_recording_message">Recording…\n\nLook at your watch for stats.</string>
 
     <!-- First-launch instructions (spec §5.2.1) -->
     <string name="first_launch_intro">OpenPebbleRun needs OpenTracks with Public API enabled.</string>
     <string name="first_launch_step_1">1. Install OpenTracks</string>
-    <string name="first_launch_step_2">2. In OpenTracks: Settings → Public API → Enable</string>
+    <string name="first_launch_step_2">2. In OpenTracks: Settings → Public API → enable both \"Public API\" and \"Automatic data transfer\"</string>
     <string name="first_launch_step_3">3. Pair Pebble in the official Pebble app</string>
     <string name="first_launch_install">Install OpenTracks (F-Droid)</string>
     <string name="first_launch_open_settings">Open OpenTracks settings</string>
@@ -17,10 +18,13 @@
     <string name="home_opentracks_label">OpenTracks</string>
     <string name="home_status_ok">✓</string>
     <string name="home_status_missing">✗</string>
-    <string name="home_prompt">Start runs from your watch.</string>
+    <string name="home_prompt">Use the button below to start a run, then look at your watch.</string>
+    <string name="home_start_button">Start Run</string>
+    <string name="home_stop_button">Stop Run</string>
 
-    <!-- Debug controls (removed in step 5 when CMD_START is wired) -->
-    <string name="debug_section_title">Debug</string>
-    <string name="debug_start_test_run">Start test run</string>
-    <string name="debug_stop_test_run">Stop test run</string>
+    <!-- Foreground-service notification (spec §5.1, §11) -->
+    <string name="notification_channel_recording_name">Recording</string>
+    <string name="notification_channel_recording_description">Shown while OpenPebbleRun is recording a run.</string>
+    <string name="notification_recording_title">OpenPebbleRun</string>
+    <string name="notification_recording_text">Recording — see your watch</string>
 </resources>

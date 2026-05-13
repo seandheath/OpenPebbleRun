@@ -21,9 +21,13 @@ import run.openpebble.companion.DashboardActivity
  *  - STATS_TARGET_PACKAGE = our applicationId (varies between debug/release)
  *  - STATS_TARGET_CLASS   = fully qualified name of [DashboardActivity]
  *
- * OpenTracks invokes the dashboard activity with Track + TrackPoints content
- * URIs and `FLAG_GRANT_READ_URI_PERMISSION`; URI parsing happens in
- * [DashboardActivity].
+ * **BAL note (spec §5.1):** these `startActivity` calls would BAL-block on
+ * API 31+ if the caller is a plain background service. PebbleListenerService
+ * therefore promotes itself to a foreground service *before* calling
+ * [startRecording] / [stopRecording] (and demotes after). That gives the
+ * service foreground process state, which Android honors as a BAL-allowance.
+ * Once the run is done the foreground state drops and BAL kicks back in;
+ * we're never in this method without a live, foreground-elevated caller.
  */
 object OpenTracksApi {
 
@@ -31,6 +35,14 @@ object OpenTracksApi {
 
     private const val ACTION_START = "de.dennisguse.opentracks.publicapi.StartRecording"
     private const val ACTION_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
+
+    // OpenTracks's publicapi activities live at FIXED FQCNs regardless of the
+    // variant (`playstore`, `debug`, `nightly` are applicationId *suffixes*,
+    // not source-package changes). Spec §6.1 writes the Component as
+    // "<package>/de.dennisguse.opentracks.publicapi.StartRecording" — the
+    // path after the slash is the literal activity class path.
+    private const val CLASS_START = "de.dennisguse.opentracks.publicapi.StartRecording"
+    private const val CLASS_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
 
     // Extras (string keys mirror spec §6.1).
     private const val EXTRA_TRACK_NAME           = "TRACK_NAME"
@@ -41,19 +53,20 @@ object OpenTracksApi {
 
     /**
      * Send a StartRecording Intent to the given OpenTracks variant package.
-     * Returns true if the intent was dispatched; false if no variant package is
-     * available (e.g., user uninstalled OpenTracks between probe and click).
+     * Returns true if the intent was dispatched without exception; false on
+     * any thrown exception. Note: `context.startActivity` does NOT throw on
+     * silent BAL_BLOCK — see the class header for how we avoid that case.
      */
     fun startRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_START).apply {
-            component = ComponentName(variantPackage, "$variantPackage.publicapi.StartRecording")
+            component = ComponentName(variantPackage, CLASS_START)
             putExtra(EXTRA_TRACK_NAME, "Run")
             putExtra(EXTRA_TRACK_CATEGORY, "running")
             putExtra(EXTRA_TRACK_ICON, "running")
             putExtra(EXTRA_STATS_TARGET_PACKAGE, context.packageName)
             putExtra(EXTRA_STATS_TARGET_CLASS, DashboardActivity::class.java.name)
             // FLAG_ACTIVITY_NEW_TASK is required when starting from a non-Activity
-            // context (e.g., a PebbleKit service handler). Cheap to set always.
+            // context (PebbleListenerService). Cheap to set always.
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
@@ -69,7 +82,7 @@ object OpenTracksApi {
     /** Send a StopRecording Intent. Mirrors [startRecording] semantics. */
     fun stopRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_STOP).apply {
-            component = ComponentName(variantPackage, "$variantPackage.publicapi.StopRecording")
+            component = ComponentName(variantPackage, CLASS_STOP)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
@@ -86,7 +99,8 @@ object OpenTracksApi {
      * Best-effort attempt to open the OpenTracks app — its settings screen if we
      * can resolve a dedicated activity, otherwise the launcher. Spec §5.2.1.
      *
-     * Returns true if any Intent dispatched.
+     * Returns true if any Intent dispatched. Called from MainActivity's UI
+     * thread, so BAL isn't relevant here.
      */
     fun openApp(context: Context, variantPackage: String): Boolean {
         val pm = context.packageManager

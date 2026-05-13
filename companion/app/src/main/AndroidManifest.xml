@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         Permissions (spec §9).
@@ -11,6 +12,28 @@
         service, internet. No QUERY_ALL_PACKAGES.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+        Foreground-service support for run state (spec §5.1). PebbleListenerService
+        promotes itself to a foreground service while CMD_START..CMD_STOP is active
+        so Android 12+ Background Activity Launch policy lets us dispatch
+        OpenTracks's publicapi Start/StopRecording activities from a background
+        wake-up. Mirrors OpenTracks's own TrackRecordingService pattern.
+
+        FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to match the
+        service's android:foregroundServiceType="connectedDevice" declaration.
+        POST_NOTIFICATIONS is requested at runtime in MainActivity on API 33+;
+        if denied the service still gets foreground state (just no visible
+        notification), so the watch-driven flow keeps working.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
+        android:minSdkVersion="34" />
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        android:minSdkVersion="33" />
+
 
     <!--
         Package visibility on Android 11+ (API 30+) requires explicit declarations
@@ -69,6 +92,28 @@
             android:name=".DashboardActivity"
             android:exported="true"
             android:label="@string/dashboard_label" />
+
+        <!--
+            PebbleKitAndroid2 bound service. Spec §3, §5.1.
+
+            The Pebble companion app on the phone (`coredevices.coreapp` ≥ 1.0.7.7)
+            binds to this service when our watchapp opens. Service self-terminates
+            a few seconds after the last watchapp closes (per library docs).
+
+            android:exported="true" with an intent-filter is required for the
+            Pebble companion app to resolve us; `tools:ignore="ExportedService"`
+            suppresses the lint warning since the access control is enforced by
+            the library's [PebbleAndroidAppPicker] (per-package allowlist).
+        -->
+        <service
+            android:name=".pebble.PebbleListenerService"
+            android:exported="true"
+            android:foregroundServiceType="connectedDevice"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH" />
+            </intent-filter>
+        </service>
 
     </application>
 

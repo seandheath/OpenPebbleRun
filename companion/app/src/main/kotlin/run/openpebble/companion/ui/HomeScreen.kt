@@ -8,9 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -24,19 +23,26 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
  * Home screen. Spec §5.2.2 — steady-state once first-launch is past.
  *
  * Shows:
- *  - Pebble: ✓/✗   (Phase B: hardcoded ✗ until PebbleKitAndroid2 wiring in step 5)
+ *  - Pebble: ✓/✗     (live from [io.rebble.pebblekit2.client.PebbleInfoRetriever])
  *  - OpenTracks: ✓ (variant name) / ✗
- *  - Prompt: "Start runs from your watch."
+ *  - Primary action: **Start Run** / **Stop Run** button. Toggles by
+ *    [runActive] (which mirrors `RunSession.active`). Disabled when OpenTracks
+ *    isn't installed.
  *
- * Debug section: temporary Start/Stop test-run buttons (Phase C). Removed in
- * step 5 once the watchapp owns this flow via CMD_START / CMD_STOP. See
- * docs/log.md TODO.
+ * Spec §5.1 / §11: runs are started from this button, not from the watch.
+ * Watch-initiated CMD_START still works *when the companion is foreground*,
+ * but Android 12+ BAL silently blocks the dispatch from a backgrounded
+ * companion. After three attempted workarounds (PendingIntent, in-service
+ * `startForeground`, CompanionDeviceManager) failed on the test device, we
+ * accepted the constraint for v0.1 — see docs/log.md.
  */
 @Composable
 fun HomeScreen(
     detection: OpenTracksVariant.Detection,
-    onStartTestRun: () -> Unit,
-    onStopTestRun: () -> Unit,
+    pebbleConnected: Boolean,
+    runActive: Boolean,
+    onStartTapped: () -> Unit,
+    onStopTapped: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -51,9 +57,7 @@ fun HomeScreen(
 
         StatusRow(
             label = stringResource(R.string.home_pebble_label),
-            // Phase B: PebbleKitAndroid2 not yet integrated. Always ✗.
-            // Step 5 will replace this with real connection state.
-            ok = false,
+            ok = pebbleConnected,
             detail = null,
         )
 
@@ -70,27 +74,17 @@ fun HomeScreen(
         )
 
         Spacer(Modifier.height(16.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(8.dp))
-
-        // === Debug controls (Phase C — removed in step 5) ===
-        Text(
-            text = stringResource(R.string.debug_section_title),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        OutlinedButton(
-            onClick = onStartTestRun,
+        Button(
+            onClick = if (runActive) onStopTapped else onStartTapped,
             enabled = detection.isInstalled,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(stringResource(R.string.debug_start_test_run))
-        }
-        OutlinedButton(
-            onClick = onStopTestRun,
-            enabled = detection.isInstalled,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(stringResource(R.string.debug_stop_test_run))
+            Text(
+                stringResource(
+                    if (runActive) R.string.home_stop_button
+                    else R.string.home_start_button
+                )
+            )
         }
     }
 }
