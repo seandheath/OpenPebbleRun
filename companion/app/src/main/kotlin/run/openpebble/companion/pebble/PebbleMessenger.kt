@@ -70,6 +70,33 @@ object PebbleMessenger {
     }
 
     /**
+     * Launch our watchapp on the connected Pebble (PebbleKit `startAppOnTheWatch`).
+     * Used by the companion's Start Run button so the user doesn't have to
+     * open the watchapp manually — we open it, OpenTracks then calls
+     * DashboardActivity back and the watch transitions to active-run via
+     * the existing RUN_STARTED path. Safe to call if the watchapp is already
+     * open (no-op in that case).
+     */
+    suspend fun startWatchapp(context: Context) {
+        val s = getOrCreate(context)
+        val result: Map<*, TransmissionResult>? = try {
+            s.startAppOnTheWatch(WATCHAPP_UUID)
+        } catch (e: Exception) {
+            Log.w(TAG, "startAppOnTheWatch failed", e)
+            return
+        }
+        if (result == null) {
+            Log.d(TAG, "startAppOnTheWatch: Pebble app not reachable")
+            return
+        }
+        for ((watch, tr) in result) {
+            if (tr !is TransmissionResult.Success) {
+                Log.d(TAG, "startAppOnTheWatch to $watch: $tr")
+            }
+        }
+    }
+
+    /**
      * Spec §7 keys 120/122/123: live metrics from OpenTracks. Pace is omitted
      * when null (treated as "stopped" — watch renders "--:--").
      *

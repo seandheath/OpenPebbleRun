@@ -9,7 +9,6 @@
     <string name="first_launch_step_1">1. Install OpenTracks</string>
     <string name="first_launch_step_2">2. In OpenTracks: Settings → Public API → enable both \"Public API\" and \"Automatic data transfer\"</string>
     <string name="first_launch_step_3">3. Pair Pebble in the official Pebble app</string>
-    <string name="first_launch_step_4">4. After install, tap \"Pair Pebble for background access\" on the Home screen so the watch can start runs while the app is closed.</string>
     <string name="first_launch_install">Install OpenTracks (F-Droid)</string>
     <string name="first_launch_open_settings">Open OpenTracks settings</string>
     <string name="first_launch_done">Done</string>
@@ -19,11 +18,9 @@
     <string name="home_opentracks_label">OpenTracks</string>
     <string name="home_status_ok">✓</string>
     <string name="home_status_missing">✗</string>
-    <string name="home_prompt">Start runs from your watch.</string>
-    <string name="home_background_access_label">Background access</string>
-    <string name="home_background_access_paired">Paired</string>
-    <string name="home_background_access_missing">Not paired</string>
-    <string name="home_pair_button">Pair Pebble for background access</string>
+    <string name="home_prompt">Use the button below to start a run, then look at your watch.</string>
+    <string name="home_start_button">Start Run</string>
+    <string name="home_stop_button">Stop Run</string>
 
     <!-- Foreground-service notification (spec §5.1, §11) -->
     <string name="notification_channel_recording_name">Recording</string>

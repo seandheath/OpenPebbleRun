@@ -60,15 +60,16 @@ The companion uses OpenTracks's **Public API** (Intents) to start/stop and **Das
 
 ### 4.2 Screens
 
-Three screens. Linear transitions.
+Four screens. Linear transitions: pre-run → active-run → stop-confirm → run-summary → pre-run.
 
 #### 4.2.1 Pre-run
 
-Shown on launch.
+Shown on launch (and after dismissing run-summary).
 
 - App title
 - Prompt: "Press Select to start"
 - Select: send `CMD_START`, transition to active run (with "Starting..." text shown until `RUN_STARTED` received, 15s timeout → error text "Couldn't start. Open companion app on phone." Any button returns to pre-run.)
+- On `RUN_STARTED` in IDLE state (companion started a run while we were sitting on this screen), transition directly to active-run without "Starting...". This covers the companion-initiated start (§5.2.2 Home → Start Run) and the resume-on-reopen path: if the user backed out of active-run while a run was still recording, the companion replays `RUN_STARTED` on the next watchapp open and we jump straight back to active-run.
 
 #### 4.2.2 Active run
 
@@ -90,18 +91,40 @@ Layout (200×228):
 HR, pace, and cadence are visually prominent. Distance and time secondary.
 
 Buttons:
-- **Back**: open stop-confirm screen
-- **Select / Up / Down**: no-op
+- **Back**: exit watchapp. The run keeps recording in the companion; re-opening the watchapp resumes on this screen (see §4.2.1). No `CMD_STOP` is sent — stop is gated behind Select+confirm so a stray Back press can't end a run.
+- **Select**: open stop-confirm screen
+- **Up / Down**: no-op
 
 If AppMessages stop arriving from companion >30s: dim metrics 50% to indicate stale. No vibration. Resume full brightness when next message arrives.
 
 #### 4.2.3 Stop confirm
 
-Shown when Back pressed.
+Shown when Select pressed on active-run.
 
 - Text: "Stop run? Select=Yes Back=No"
-- **Select**: send `CMD_STOP`, single short vibration on ack, exit to pre-run
-- **Back**: return to active run
+- **Select**: send `CMD_STOP`, single short vibration on ack, transition to run-summary (§4.2.4)
+- **Back**: return to active-run (which has been ticking underneath — its inbox handler stayed installed, so stats are up-to-date on return)
+
+#### 4.2.4 Run summary
+
+Shown after a confirmed stop. Snapshots the run's final stats from active-run's accumulators (`s_elapsed_sec`, latest `KEY_DISTANCE`, mean of internal-HRM samples).
+
+```
+┌────────────────────────┐
+│      RUN COMPLETE      │  bold title
+│                        │
+│  DISTANCE   X.XX mi    │
+│  TIME       MM:SS      │
+│  AVG PACE   M:SS /mi   │
+│  AVG HR     ### bpm    │  "---" if no HR samples
+└────────────────────────┘
+```
+
+- Distance / time: copied from the most recent `KEY_DISTANCE` / locally-ticked elapsed second.
+- Avg pace: `time_sec * 100 / dist_hundredths_mi` (sec/mi), capped at 3600 ≡ "--:--".
+- Avg HR: arithmetic mean of all non-zero `HealthEventHeartRateUpdate` samples received while active-run was up. "---" if no samples ever fired.
+
+Buttons: **any** button pops to pre-run. No inbox handler — a stopped run produces no further metrics.
 
 ### 4.3 Sensors
 
@@ -135,8 +158,8 @@ AppMessage delivers one message at a time and ACKs each. Throttle sends to one p
 - **minSdk**: 26 (Android 8.0)
 - **targetSdk**: 35
 - **Language**: Kotlin
-- **Background**: PebbleKitAndroid2 bound service. The companion app prompts the user once at first launch to **pair the Pebble via Android's CompanionDeviceManager (CDM)**; that association grants `REQUEST_COMPANION_RUN_IN_BACKGROUND` (Background Activity Launch exemption) and `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` (allows `Service.startForeground()` from a background callback). Without the CDM association Android 12+ silently `BAL_BLOCK`s the OpenTracks publicapi dispatch and Android 14+ refuses the foreground-service promotion — the watch can't actually start runs. With the association in place, both work. (Same mechanism Gadgetbridge uses for Pebble.)
-- **Foreground service while recording**: between CMD_START and CMD_STOP the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible — and the watch-driven flow continues to work.
+- **Background**: PebbleKitAndroid2 bound service. Runs are started by tapping **Start Run** on the companion's Home screen (foreground; no Background Activity Launch restrictions apply). Watch-initiated `CMD_START` / `CMD_STOP` from a fully-backgrounded companion would hit Android 12+ BAL_BLOCK silently; this is documented as a known limitation (§11). PendingIntent, in-service `startForeground`, and CompanionDeviceManager workarounds were all attempted and rejected for v0.1 (see docs/log.md).
+- **Foreground service while recording**: between Start and Stop the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. Foreground promotion is initiated by DashboardActivity (which OpenTracks calls back into our app from its own foreground context), so the FGS-from-background restriction doesn't apply. `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible.
 
 ### 5.2 Screens
 
@@ -149,7 +172,6 @@ One screen, shown only if Public API check fails. No multi-step wizard.
   1. Install OpenTracks (button → IzzyOnDroid / F-Droid link)
   2. In OpenTracks: Settings → Public API → enable both **Public API** and **Automatic data transfer** (the dashboard-callback gate; recording starts without it but `DashboardActivity` never fires)
   3. Pair Pebble in the official Pebble app
-  4. After install, tap "Pair Pebble for background access" on the Home screen so the watch can start runs while the companion is closed (one-time CDM system dialog).
 - Button: "Open OpenTracks settings" (Intent to OpenTracks; falls back to launcher Intent)
 - Button: "Done"
 
@@ -159,8 +181,8 @@ Steady-state. Shown after first-launch.
 
 - Pebble: ✓/✗
 - OpenTracks: ✓ (variant name) / ✗
-- Background access: ✓ Paired / ✗ Not paired. When ✗, an outlined "Pair Pebble for background access" button below the status rows launches the CDM pairing system dialog.
-- Text: "Start runs from your watch."
+- Text: "Use the button below to start a run, then look at your watch."
+- Primary action: a **Start Run** button (becomes **Stop Run** while a run is active, switched live by a 1 Hz Compose tick reading `RunSession.active`). Disabled when OpenTracks isn't installed.
 - No settings, no troubleshoot, no run history. (Use OpenTracks for history.)
 - While a run is active, an ongoing notification ("Recording — see your watch") is shown in the shade. Tapping it opens this Home screen.
 
@@ -288,8 +310,6 @@ Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — the
 - `FOREGROUND_SERVICE` (Android 9+; normal permission) — for run-state foreground service (§5.1)
 - `FOREGROUND_SERVICE_CONNECTED_DEVICE` (API 34+; normal permission) — required to match the service's `foregroundServiceType="connectedDevice"` declaration
 - `POST_NOTIFICATIONS` (API 33+; runtime, requested at first launch) — for the recording notification posted while a run is active
-- `REQUEST_COMPANION_RUN_IN_BACKGROUND` (API 26+; normal; activated by CDM association) — BAL exemption for the listener service
-- `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` (API 30+; normal; activated by CDM association) — allows `Service.startForeground()` from a background callback
 - `<queries>` manifest block listing:
   - `de.dennisguse.opentracks` (and `.playstore`, `.debug`, `.nightly`)
   - Intent action `io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH` (required for PebbleKitAndroid2 picker on Android 11+)
@@ -336,7 +356,7 @@ Each: `README.md`, `LICENSE`, one-line privacy statement.
 - PebbleKitAndroid2 v1.1.0 (April 2026) is the current pinned version. Pin in `build.gradle.kts`; expect API drift across minor versions.
 - Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware as of May 2026. Buttons-only UI.
 - An ongoing notification ("Recording — see your watch") is shown while a run is active and cannot be dismissed until you stop the run. Matches OpenTracks's own behaviour; users typically see both side-by-side during the same run.
-- Background watch control requires a one-time CompanionDeviceManager pairing in the companion app (system dialog). If the user dismisses it without pairing, runs can only be started while the companion is foreground — Home shows the Pair button until done.
+- **Runs are started from the companion app's Home screen, not from the watch.** The watch's Select-button still sends `CMD_START` and works *when the companion happens to be foreground*, but Android 12+ BAL policy silently blocks the dispatch when the companion is backgrounded. Three workarounds were attempted in v0.1 development — PendingIntent, in-service `startForeground`, CompanionDeviceManager pairing — and each failed on Android 14+ in different ways (`ForegroundServiceStartNotAllowedException`, fragile PI lifetime, CDM scan unable to find the Pebble while connected to the Pebble Android app). v0.1 ships with the foreground-app-only constraint; same pattern as Strava and most Android fitness apps.
 
 ## 12. Testing
 
@@ -355,7 +375,7 @@ Semantic versioning, both repos in lockstep. v1 release: `1.0.0`. No protocol ve
 5. Watchapp + Companion: end-to-end run start/stop with stub metrics on watch
 6. Watchapp: active-run screen layout (5 metrics)
 7. Watchapp: HR sampling + cadence derivation (local display only)
-8. Watchapp: stop-confirm screen
+8. Watchapp: stop-confirm + run-summary screens
 9. Companion: home screen polish, first-launch instructions
 10. Manual testing on real PT2 + Android device
 11. IzzyOnDroid submission, Pebble Appstore submission

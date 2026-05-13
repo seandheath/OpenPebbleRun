@@ -95,6 +95,38 @@ quick.
 
 Both fixes verified against the upstream files (`pebble-dev/.../IntentDashboardUtils.java` and `OpenTracksApp/.../TrackPointsColumns.java` on `main` as of 2026-05-13).
 
+## 2026-05-13 — v0.1: start runs from the companion app; abandon watch-initiated-from-background (supersedes CDM entry below)
+
+**Decision:** The companion app's Home screen has a **Start Run** / **Stop Run** button. Runs are initiated by tapping it on the phone, not by pressing Select on the watch. The watch's `CMD_START` path is preserved as best-effort (works while the companion is foreground; silently blocked otherwise) but is documented as non-canonical (spec §11).
+
+**Rationale:** Three Android-mechanism attempts today to allow a backgrounded bound service to dispatch `OpenTracks.publicapi.StartRecording` all failed on the user's Android 14+ test device for different reasons:
+
+1. **PendingIntent with creator-side BAL** — crashed on first build (wrong API: `setPendingIntentBackgroundActivityStartMode` is sender-side on API 34+, not creator-side). After the fix it worked only while the PI was in memory; doesn't survive process death; user would have to re-open MainActivity every time the OS evicts the process. Fragile.
+2. **In-service `startForeground()`** — throws `ForegroundServiceStartNotAllowedException` on Android 14+. The FGS-from-background gate is the same family of restriction as BAL itself; `BOUND_FOREGROUND_SERVICE` proc state isn't enough.
+3. **CompanionDeviceManager pairing** — AOSP exempts UIDs with an active CDM association from BAL. But the pairing system dialog scans for BLE-advertising devices, and the Pebble doesn't BLE-advertise while connected to the Pebble Android app, so the dialog never finds the watch. Dropped to wildcard filter; the dialog showed *other* nearby BLE devices but not the Pebble. Verified the issue isn't the Pebble app's bond — it's that connected BLE peripherals suppress advertising. No way around this without disconnecting the Pebble from the Pebble app temporarily (gross UX) or implementing `NotificationListenerService` (Settings consent dance, comparable cost to CDM, no winner).
+
+Rather than escalate further (NotificationListenerService, or rewriting OpenPebbleRun to record GPS itself and bypass OpenTracks entirely), accept the constraint: **runs are started from the phone**. Same pattern as Strava, RunKeeper, and most Android fitness apps. The watch remains the canonical *display* surface during a run, just not the initiator.
+
+**Code changes** (subtractive):
+- Deleted `companion/.../cdm/CdmManager.kt`.
+- Manifest: removed `REQUEST_COMPANION_RUN_IN_BACKGROUND`, `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`, `uses-feature android.software.companion_device_setup`.
+- `MainActivity`: removed `pairingLauncher`, `paired` state, `requestPairing()`; added `runActive` state + 1 Hz Compose tick reading `RunSession.active`; added `onStartTapped`/`onStopTapped` wired to `OpenTracksApi.startRecording`/`stopRecording` from the foreground context.
+- `HomeScreen`: removed "Background access" status row and "Pair Pebble" button; added a primary Start Run / Stop Run button below the existing rows.
+- `FirstLaunchScreen` + `strings.xml`: removed step 4 + the four pairing-related string resources.
+- `PebbleListenerService`: removed the CDM diagnostic log; `handleStart` / `handleStop` are otherwise unchanged.
+- Spec §5.1 / §5.2.1 / §5.2.2 / §9 / §11 updated to reflect the foreground-only start path.
+
+**Preserved from earlier today** (still valuable, all working):
+- 5 s polling of OpenTracks Dashboard URIs in `PebbleListenerService` (out of `DashboardActivity` lifecycle).
+- `moveToLast` + skip-backward cursor fix; TIME=0 filter in `PebbleMessenger`.
+- Watchapp local 1 Hz time tick + 0.2 Hz HR sampling.
+- Foreground service while recording — promotion is triggered from `DashboardActivity.onCreate` (called by OpenTracks from *its* foreground context), so the FGS-from-background restriction doesn't apply.
+- Multi-variant OpenTracks detection; build/log/install tooling; cursor extension helpers.
+
+**Alternatives considered but not pursued:**
+- *NotificationListenerService* — would grant our UID a BAL exemption similar to CDM. Requires Settings-page consent (Settings > Notification Access > OpenPebbleRun > Allow). Comparable cost to CDM; no improvement over the foreground-only start path; not worth the implementation overhead.
+- *Custom GPS recording* — would bypass OpenTracks entirely and avoid the IPC. Massive rewrite, abandons the OpenTracks-as-source-of-truth design (spec §3, §6). Out of scope.
+
 ## 2026-05-13 — Adopt CompanionDeviceManager for BAL exemption (supersedes today's foreground-service-from-background attempt below)
 
 **Decision:** Pair the Pebble via Android's CompanionDeviceManager (CDM) at first launch. Manifest declares `REQUEST_COMPANION_RUN_IN_BACKGROUND` + `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`; both are normal permissions that activate when the CDM association is in place. The foreground-service promotion from the prior entry stays — it's still useful UX-wise — but now actually *works* because the CDM grant unlocks the foreground-service-from-background path on API 34+.
@@ -207,11 +239,29 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Pure-upstream install (rejected — `pebble sdk install` drops binaries that won't execute on NixOS without nix-ld; can't assume contributors have that set up).
 - Pin an older SDK whose manifest accepts pebble-tool 5.0.5 (rejected — SDK and tool versions move together; pinning either ages the project out of upstream's support window).
 
+## 2026-05-13 — Companion-start race: install pre-run inbox handler synchronously
+
+**Decision:** `pre_run_show()` calls `app_message_set_inbox_handler(inbox_handler)` synchronously before `window_stack_push`, in addition to the existing install in `window_appear`.
+**Rationale:** Companion-started runs (spec §11) send `RUN_STARTED` from `DashboardActivity.onCreate` ~100–150 ms after the user taps Start — often before the watchapp's just-started event loop dispatches the `window_appear` callback that installs the pre-run inbox handler. With `s_inbox_handler` still `NULL` at that moment, `app_message.c:inbox_received_handler` silently drops the message, stranding the watch on "Press Select to start" forever (the companion's `onAppOpened` retry doesn't fire either, because `RunSession.active` is still `false` when the watchapp first opens). Synchronous install mirrors `active_run.c:354`'s pattern and eliminates the race window entirely.
+**Alternatives considered:**
+- Track a `runStartPending` flag on the companion and have `onAppOpened` send `RUN_STARTED` on that flag too: adds state, risks lying to the watch if OpenTracks denies the recording.
+- Delay the `DashboardActivity.onCreate` send by 500 ms: brittle, depends on BT latency and PebbleKit binding state.
+
+## 2026-05-13 — Active-run Back exits without stopping; new run-summary screen
+
+**Decision:** Active-run Back exits the watchapp without sending `CMD_STOP`; the run continues in the companion and re-opening the watchapp resumes the active-run display via the existing `onAppOpened` → `RUN_STARTED` replay (gated on `RunSession.active`). Select on active-run opens stop-confirm; on confirm the watchapp shows a new run-summary screen with distance / time / avg pace / avg HR before any button dismisses to pre-run.
+**Rationale:** Single-button Back-to-stop is too easy to fire accidentally on a wrist watch; Pebble's first-party Workout app uses Select for stop-entry plus a confirm step. Resume-on-reopen makes Back a non-destructive escape hatch, matching how Strava/Runkeeper/etc. behave when their app is backgrounded. The run-summary screen lets the user see what they just ran without switching to the phone — closing the loop end-to-end on the watch.
+**Companion-side correlate:** `PebbleListenerService.handleStop` and `MainActivity.onStopTapped` now call `RunSession.clear()` so a re-open *after* a stop doesn't falsely replay `RUN_STARTED`. Previously `RunSession.active` only flipped back to `false` when the Android task tore down `DashboardActivity` — typically long after the run had actually ended.
+**Alternatives considered:**
+- Long-press Back as stop-entry: less discoverable; no chord support in current code.
+- Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
+- Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
+
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
-<!-- TODO:FEATURE — stop-confirm screen + vibration (spec §14 step 9, replaces transitional Back→CMD_STOP) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
+<!-- TODO:FEATURE — companion-initiated stop should also trigger watch run-summary (requires new RUN_STOPPED key; see 2026-05-13 active-run-Back entry) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->

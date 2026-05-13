@@ -22,7 +22,6 @@ import io.rebble.pebblekit2.common.model.WatchIdentifier
 import kotlinx.coroutines.launch
 import run.openpebble.companion.MainActivity
 import run.openpebble.companion.R
-import run.openpebble.companion.cdm.CdmManager
 import run.openpebble.companion.metrics.TrackStats
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
@@ -346,14 +345,6 @@ class PebbleListenerService : BasePebbleListenerService() {
             coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
             return ReceiveResult.Nack
         }
-        if (!CdmManager.isPaired(this)) {
-            // Not fatal — we still attempt the dispatch — but log loudly. Without
-            // a CDM association, BAL will reject the startActivity on API 31+ and
-            // startForeground throws ForegroundServiceStartNotAllowedException on
-            // API 34+. The companion's Home screen exposes a "Pair Pebble for
-            // background access" button that fixes this with one tap.
-            Log.w(TAG, "CMD_START but no CDM association — open the companion app and tap Pair Pebble")
-        }
         Log.d(TAG, "CMD_START → startRecording($pkg)")
         // Promote *before* dispatching: foreground state grants the BAL
         // allowance Android 12+ requires for the subsequent startActivity.
@@ -376,6 +367,11 @@ class PebbleListenerService : BasePebbleListenerService() {
         // Stay foreground for the dispatch (BAL still required), then demote.
         OpenTracksApi.stopRecording(this, pkg)
         demoteFromForeground()
+        // Clear RunSession so onAppOpened doesn't falsely replay RUN_STARTED on
+        // the next watchapp open. DashboardActivity.onDestroy also clears
+        // these but only fires when the Android task is torn down — typically
+        // long after the run has actually stopped.
+        RunSession.clear()
         return ReceiveResult.Ack
     }
 
@@ -383,6 +379,16 @@ class PebbleListenerService : BasePebbleListenerService() {
         if (watchappUUID == PebbleMessenger.WATCHAPP_UUID) {
             RunSession.watchAppOpen = true
             Log.d(TAG, "watchapp opened on $watch")
+            // If a run is already in progress (user tapped Start on the
+            // companion before opening the watchapp), nudge the watch into
+            // active-run with a fresh RUN_STARTED. pre_run's inbox handler
+            // honors RUN_STARTED in IDLE state as well as STARTING for this
+            // exact handoff.
+            if (RunSession.active) {
+                coroutineScope.launch {
+                    PebbleMessenger.sendRunStarted(this@PebbleListenerService)
+                }
+            }
         }
     }
 

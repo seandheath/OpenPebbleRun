@@ -6,11 +6,16 @@
  * Pre-run screen state machine. Spec §4.2.1.
  *
  *   IDLE  ──Select─→  STARTING
+ *   IDLE  ──RUN_STARTED─→  active_run_show()  (companion-initiated start)
  *   STARTING ──RUN_STARTED─→  active_run_show()
  *   STARTING ──15s timeout─→ ERROR
  *   STARTING ──RUN_FAILED─→  ERROR
  *   ERROR    ──5s timeout─→  IDLE
  *   ERROR    ──any button─→  IDLE   (spec also allows immediate dismiss)
+ *
+ * The IDLE→active_run path covers the v0.1 companion-app-start flow: the user
+ * taps Start on the phone before opening the watchapp (or while it's open on
+ * pre-run); RUN_STARTED arrives unsolicited and we jump straight to active-run.
  */
 
 typedef enum {
@@ -90,7 +95,10 @@ static void enter_starting(void) {
 
 static void inbox_handler(DictionaryIterator *iter) {
     if (dict_find(iter, KEY_RUN_STARTED)) {
-        if (s_state == PRE_RUN_STARTING) {
+        // Honor RUN_STARTED in either STARTING (user-pressed-Select path) or
+        // IDLE (companion-app-started-the-run path). The two paths converge
+        // on the same active_run_show() transition.
+        if (s_state == PRE_RUN_STARTING || s_state == PRE_RUN_IDLE) {
             cancel_timeout();
             // Reset pre-run UI to IDLE state for when active-run pops back.
             s_state = PRE_RUN_IDLE;
@@ -171,9 +179,10 @@ static void window_unload(Window *window) {
     if (s_prompt_layer) { text_layer_destroy(s_prompt_layer); s_prompt_layer = NULL; }
 }
 
-// `appear` fires every time the window comes to the top of the stack — both
-// on initial push and when active_run pops back to us. Reinstall our inbox
-// handler here so we receive RUN_STARTED for a subsequent run.
+// `appear` fires every time the window comes to the top of the stack. The
+// initial push is covered by the synchronous install in pre_run_show below;
+// this handles the active_run→pre_run pop case, where active_run's window
+// _unload clears the handler to NULL on its way out.
 static void window_appear(Window *window) {
     app_message_set_inbox_handler(inbox_handler);
 }
@@ -190,6 +199,14 @@ void pre_run_show(void) {
         });
         window_set_click_config_provider(s_window, click_config_provider);
     }
+    // Install synchronously — the companion-started flow (spec §11) fires
+    // RUN_STARTED from DashboardActivity.onCreate as soon as OpenTracks calls
+    // back, which can land at the watch before the event loop has a chance to
+    // dispatch window_appear. Without this, `s_inbox_handler` in app_message.c
+    // is still NULL and `inbox_received_handler` silently drops the message,
+    // stranding the watch on "Press Select to start" indefinitely. Mirrors
+    // active_run_show()'s pre-push install (active_run.c:354).
+    app_message_set_inbox_handler(inbox_handler);
     window_stack_push(s_window, true);
 }
 

@@ -34,19 +34,6 @@
         android:name="android.permission.POST_NOTIFICATIONS"
         android:minSdkVersion="33" />
 
-    <!--
-        CompanionDeviceManager BAL/FGS exemptions (spec §5.1).
-        Both are normal-level: declaring them is necessary, but the actual grant
-        only takes effect once the user completes the CDM pairing dialog in
-        MainActivity. With an active association, Android's
-        BackgroundActivityStartController short-circuits to
-        BAL_ALLOW_ALLOWLISTED_COMPONENT for our UID — letting
-        PebbleListenerService dispatch OpenTracks's publicapi.StartRecording /
-        StopRecording from a watch-button callback and promote itself to
-        foreground service for the duration of the run.
-    -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
 
     <!--
         Package visibility on Android 11+ (API 30+) requires explicit declarations

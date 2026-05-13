@@ -1,4 +1,5 @@
 #include "active_run.h"
+#include "stop_confirm.h"
 #include "../app_message.h"
 
 #include <stdio.h>
@@ -66,6 +67,17 @@ static AppTimer *s_stale_timer = NULL;
 // matches what OpenTracks's own TrackRecordingActivity does internally.
 static uint32_t s_elapsed_sec = 0;
 
+// Raw most-recent distance from KEY_DISTANCE, preserved alongside the
+// formatted s_dist_buf for the run-summary screen to read post-stop.
+static uint32_t s_dist_hundredths_mi = 0;
+
+// Running mean of internal-HRM samples. Accumulated in health_event_handler
+// for the duration of the active-run window; reported via active_run_get_stats
+// to the summary screen. Zero-valued samples (sensor warming up, not worn)
+// are skipped so they don't drag the average down.
+static uint64_t s_hr_sum   = 0;
+static uint32_t s_hr_count = 0;
+
 // ===== Heart-rate sampling =====
 //
 // Spec §4.3: internal HRM at 1 Hz, subscribe to HealthEventHeartRateUpdate,
@@ -87,6 +99,12 @@ static void health_event_handler(HealthEventType event, void *context) {
     if (event != HealthEventHeartRateUpdate) return;
     HealthValue bpm = health_service_peek_current_value(HealthMetricHeartRateBPM);
     render_hr(bpm);
+    // Accumulate for end-of-run average. Skip zeros so a cold/unworn sensor
+    // doesn't pull the mean toward 0 before real data arrives.
+    if (bpm > 0) {
+        s_hr_sum += (uint64_t)bpm;
+        s_hr_count += 1;
+    }
 }
 
 // ===== Formatting helpers =====
@@ -176,7 +194,8 @@ static void inbox_handler(DictionaryIterator *iter) {
     }
     t = dict_find(iter, KEY_DISTANCE);
     if (t) {
-        format_dist(t->value->uint32, s_dist_buf, sizeof(s_dist_buf));
+        s_dist_hundredths_mi = t->value->uint32;
+        format_dist(s_dist_hundredths_mi, s_dist_buf, sizeof(s_dist_buf));
         text_layer_set_text(s_dist_value, s_dist_buf);
         got_metric = true;
     }
@@ -208,22 +227,34 @@ static void inbox_handler(DictionaryIterator *iter) {
 }
 
 // ===== Buttons =====
+//
+// Spec §4.2.2 (revised — see docs/log.md 2026-05-13):
+//   Back   → exit watchapp; run keeps recording in the companion. Re-opening
+//            resumes on this screen via the companion's onAppOpened replay of
+//            RUN_STARTED while RunSession.active is true.
+//   Select → open stop-confirm (spec §4.2.3).
+//   Up/Down → no-op.
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *ctx) {
-    // Spec §4.2.2: Back opens stop-confirm. Step 9 implements that; until then
-    // Back stops the run directly. The CMD_STOP send stays in step 9 — the
-    // confirm screen will just call this same handler on Select.
-    app_message_send_cmd(KEY_CMD_STOP);
-    window_stack_pop(true);
+    // pop_all empties the window stack; Pebble exits the app when the stack
+    // becomes empty. Notably we do NOT send CMD_STOP — the run is meant to
+    // continue recording in the companion while the user has the watchapp
+    // dismissed.
+    window_stack_pop_all(true);
+}
+
+static void select_click_handler(ClickRecognizerRef recognizer, void *ctx) {
+    stop_confirm_show();
 }
 
 static void noop_click_handler(ClickRecognizerRef recognizer, void *ctx) {
-    // Spec §4.2.2: Select/Up/Down no-op while running.
+    // Up/Down intentionally unused — no pause feature (spec §11) and we don't
+    // want sweaty accidental presses to be load-bearing.
 }
 
 static void click_config_provider(void *ctx) {
     window_single_click_subscribe(BUTTON_ID_BACK,   back_click_handler);
-    window_single_click_subscribe(BUTTON_ID_SELECT, noop_click_handler);
+    window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
     window_single_click_subscribe(BUTTON_ID_UP,     noop_click_handler);
     window_single_click_subscribe(BUTTON_ID_DOWN,   noop_click_handler);
 }
@@ -308,6 +339,11 @@ static void window_load(Window *window) {
     s_last_inbox_ms = 0;
     s_dimmed = false;
     s_elapsed_sec = 0;
+    // Reset summary-screen accumulators so a fresh run doesn't inherit
+    // distance/HR from a prior run that didn't reach window_unload.
+    s_dist_hundredths_mi = 0;
+    s_hr_sum = 0;
+    s_hr_count = 0;
     schedule_stale_tick();
 
     // Enable internal HRM at 0.2 Hz (one sample every 5 s) and subscribe to
@@ -360,4 +396,19 @@ void active_run_hide(void) {
         window_destroy(s_window);
         s_window = NULL;
     }
+}
+
+Window *active_run_get_window(void) {
+    return s_window;
+}
+
+void active_run_get_stats(RunStats *out) {
+    // Safe to call even after the window has been removed from the stack —
+    // the file-scope statics survive until app exit. The summary screen reads
+    // these once in its window_load.
+    out->time_sec = s_elapsed_sec;
+    out->dist_hundredths_mi = s_dist_hundredths_mi;
+    out->avg_hr = (s_hr_count > 0)
+        ? (uint16_t)(s_hr_sum / s_hr_count)
+        : 0;
 }

@@ -16,9 +16,10 @@
  * watch's own HRM and step counter. Step 8 routes incoming HR_EXTERNAL to the
  * HR row, replacing the local HRM source.
  *
- * Buttons:
- *   Back   → send CMD_STOP, pop. Step 9 wraps this with a confirm screen.
- *   Select/Up/Down → no-op.
+ * Buttons (spec §4.2.2, revised — see docs/log.md 2026-05-13):
+ *   Back   → exit watchapp; run keeps recording in the companion.
+ *   Select → open stop-confirm (spec §4.2.3).
+ *   Up / Down → no-op.
  *
  * Stale handling (spec §4.2.2 + §8.1): if no inbox message arrives within 30 s,
  * dim text colors to GColorLightGray. Restore full color on next inbox.
@@ -28,5 +29,25 @@
 
 #include <pebble.h>
 
-void active_run_show(void);
-void active_run_hide(void);
+/*
+ * Snapshot of the run's end-of-run statistics, populated from the most recent
+ * companion-pushed values (time/distance) and the running mean of internal-HRM
+ * samples observed while the active-run screen was up. Consumed by the
+ * run-summary screen.
+ *
+ *   time_sec            — locally-ticked elapsed seconds, snapped to the
+ *                         companion's KEY_TIME whenever one arrives.
+ *   dist_hundredths_mi  — most recent KEY_DISTANCE value.
+ *   avg_hr              — mean of all non-zero HRM samples, or 0 if no sample
+ *                         ever fired (very short run / sensor cold).
+ */
+typedef struct {
+    uint32_t time_sec;
+    uint32_t dist_hundredths_mi;
+    uint16_t avg_hr;
+} RunStats;
+
+void    active_run_show(void);
+void    active_run_hide(void);
+Window *active_run_get_window(void);
+void    active_run_get_stats(RunStats *out);

@@ -8,8 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -25,19 +25,24 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
  * Shows:
  *  - Pebble: ✓/✗     (live from [io.rebble.pebblekit2.client.PebbleInfoRetriever])
  *  - OpenTracks: ✓ (variant name) / ✗
- *  - Background access: ✓ Paired / ✗ Not paired — CDM association state. When
- *    not paired, an outlined button below the rows offers to launch the
- *    pairing dialog. Without this the watch cannot start a run while the
- *    companion is backgrounded (bug #14).
+ *  - Primary action: **Start Run** / **Stop Run** button. Toggles by
+ *    [runActive] (which mirrors `RunSession.active`). Disabled when OpenTracks
+ *    isn't installed.
  *
- * No settings, no troubleshoot, no run history (use OpenTracks for history).
+ * Spec §5.1 / §11: runs are started from this button, not from the watch.
+ * Watch-initiated CMD_START still works *when the companion is foreground*,
+ * but Android 12+ BAL silently blocks the dispatch from a backgrounded
+ * companion. After three attempted workarounds (PendingIntent, in-service
+ * `startForeground`, CompanionDeviceManager) failed on the test device, we
+ * accepted the constraint for v0.1 — see docs/log.md.
  */
 @Composable
 fun HomeScreen(
     detection: OpenTracksVariant.Detection,
     pebbleConnected: Boolean,
-    paired: Boolean,
-    onPairTapped: () -> Unit,
+    runActive: Boolean,
+    onStartTapped: () -> Unit,
+    onStopTapped: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -62,28 +67,25 @@ fun HomeScreen(
             detail = detection.label,
         )
 
-        StatusRow(
-            label = stringResource(R.string.home_background_access_label),
-            ok = paired,
-            detail = if (paired) stringResource(R.string.home_background_access_paired)
-                     else stringResource(R.string.home_background_access_missing),
-        )
-
-        if (!paired) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = onPairTapped,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.home_pair_button))
-            }
-        }
-
         Spacer(Modifier.height(24.dp))
         Text(
             text = stringResource(R.string.home_prompt),
             style = MaterialTheme.typography.bodyLarge,
         )
+
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = if (runActive) onStopTapped else onStartTapped,
+            enabled = detection.isInstalled,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                stringResource(
+                    if (runActive) R.string.home_stop_button
+                    else R.string.home_start_button
+                )
+            )
+        }
     }
 }
 
@@ -98,7 +100,7 @@ private fun StatusRow(label: String, ok: Boolean, detail: String?) {
             style = MaterialTheme.typography.titleLarge,
         )
         Text(
-            text = if (detail != null) "$label  ($detail)" else label,
+            text = if (ok && detail != null) "$label  ($detail)" else label,
             style = MaterialTheme.typography.titleMedium,
         )
     }

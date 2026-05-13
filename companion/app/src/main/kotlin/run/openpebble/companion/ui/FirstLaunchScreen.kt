@@ -54,7 +54,6 @@ fun FirstLaunchScreen(
         Text(stringResource(R.string.first_launch_step_1), style = MaterialTheme.typography.bodyMedium)
         Text(stringResource(R.string.first_launch_step_2), style = MaterialTheme.typography.bodyMedium)
         Text(stringResource(R.string.first_launch_step_3), style = MaterialTheme.typography.bodyMedium)
-        Text(stringResource(R.string.first_launch_step_4), style = MaterialTheme.typography.bodyMedium)
 
         Spacer(Modifier.height(16.dp))
 
