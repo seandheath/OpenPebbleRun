@@ -156,9 +156,28 @@ class DashboardActivity : ComponentActivity() {
      * SENSOR_HEARTRATE is logged here but the external-HR forwarding state
      * machine (spec §4.3) lands in step 8.
      */
+    @Volatile private var loggedTrackPointSchema = false
+
     private fun readLatestTrackPoint() {
         val uri = trackPointsUri ?: return
         contentResolver.query(uri, null, null, null, "$COL_TIME DESC")?.use { c ->
+            if (!loggedTrackPointSchema) {
+                loggedTrackPointSchema = true
+                Log.d(TAG, "TrackPoints schema: count=${c.count} columns=${c.columnNames.joinToString()}")
+                if (c.moveToFirst()) {
+                    val sample = buildString {
+                        for (i in 0 until c.columnCount) {
+                            if (i > 0) append(", ")
+                            append(c.getColumnName(i)).append("=")
+                            append(when {
+                                c.isNull(i) -> "null"
+                                else -> runCatching { c.getString(i) }.getOrDefault("<binary>")
+                            })
+                        }
+                    }
+                    Log.d(TAG, "TrackPoints[0]: $sample")
+                }
+            }
             if (!c.moveToFirst()) return@use
             val speed = c.floatOrNull(COL_SPEED)
             val time = c.longOrNull(COL_TIME)
