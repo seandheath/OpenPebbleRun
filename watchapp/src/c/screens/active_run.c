@@ -53,12 +53,19 @@ static TextLayer *s_time_label, *s_time_value;
 // right) is shrunk from 100 to 82 px wide to leave room for this 16-px gutter.
 static Layer *s_stop_icon = NULL;
 
-// Value buffers. AppMessage handler writes into these and refreshes the layer.
-static char s_hr_buf[8];      // "###" or "---"
-static char s_pace_buf[12];   // "M:SS"
-static char s_cad_buf[8];     // "###" or "---"
-static char s_dist_buf[10];   // "X.XX"
-static char s_time_buf[10];   // "MM:SS" or "H:MM:SS"
+// Value buffers. AppMessage handler writes into these and refreshes the
+// layer. Sized to gcc's worst-case format-truncation analysis (it can't see
+// the runtime ranges of bpm / seconds / hundredths-mile and assumes full
+// uint range): %lu can emit up to 10 digits + null, etc. Real outputs stay
+// well below these sizes (e.g. "172" for HR, "0:23:45" for time), but the
+// extra slack silences -Wformat-truncation. RAM cost is negligible (~14B).
+static char s_hr_buf[12];     // "###" or "---" (worst case "4294967295")
+static char s_pace_buf[12];   // "M:SS" — gcc reasons through the <3600 cap
+static char s_dist_buf[16];   // "X.XX" worst case "4294967295.99"
+static char s_time_buf[16];   // "MM:SS" / "H:MM:SS" worst case 3×10-digit
+// Cadence has no snprintf'd buffer — value layer is set to the literal
+// "---" placeholder in window_load and isn't updated until step 7 (spec §14)
+// reads HealthMetricStepCount and writes a derived SPM here.
 
 // Staleness tracking. last_inbox_ms is updated by inbox_handler; the timer
 // callback compares against `app_now_ms()` (we use a monotonic counter via

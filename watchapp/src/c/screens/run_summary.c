@@ -43,12 +43,14 @@ static TextLayer *s_time_label,  *s_time_value;
 static TextLayer *s_pace_label,  *s_pace_value;
 static TextLayer *s_hr_label,    *s_hr_value;
 
-// String buffers for the four value cells. Sized to fit the longest expected
-// rendering (e.g. "1:23:45" for time, "###" for HR).
-static char s_dist_buf[10];
-static char s_time_buf[10];
+// String buffers for the four value cells. Sized to gcc's worst-case
+// format-truncation analysis (it can't see the runtime ranges of the uint32
+// inputs and assumes full uint range). Real outputs stay well below these
+// sizes — see active_run.c for the same sizing rationale.
+static char s_dist_buf[16];
+static char s_time_buf[16];
 static char s_pace_buf[12];
-static char s_hr_buf[8];
+static char s_hr_buf[12];
 
 // === Formatting helpers (mirror active_run.c) ===========================
 //
