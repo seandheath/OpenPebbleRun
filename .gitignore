@@ -32,5 +32,6 @@ keystore.properties
 watchapp/build/
 watchapp/.pebble-cache/
 watchapp/*.pbw
+watchapp/.lock-waf_*_build
 watchapp/resources/src/resource_ids.auto.h
 watchapp/src/resource_ids.auto.h
