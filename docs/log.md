@@ -265,8 +265,9 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 
 **Implementation notes:**
 - `OpenTracksApi.kt`: removed `EXTRA_TRACK_NAME` constant and the `putExtra` line. Class header docstring updated to explain the omission.
-- `MainActivity.onStartTapped`: appended `OpenTracksApi.openApp(this@MainActivity, pkg)` after `startRecording`. Log message updated to reflect the third action.
-- Spec §5.2.2 updated with the three-step Start Run flow and the track-name rationale.
+- `DashboardActivity.onCreate`: after stashing URIs in `RunSession` and dispatching `sendRunStarted`, calls `OpenTracksApi.openApp` to foreground OpenTracks. Done from here rather than `MainActivity.onStartTapped` because OpenTracks's callback to `DashboardActivity` races a launcher Intent fired from `MainActivity` — the race lands `DashboardActivity` on top of OpenTracks (the "Recording — see your watch" screen the user reported seeing in the first attempt). Firing `openApp` from inside the callback inverts the order: OpenTracks foregrounds *after* its callback to us has been delivered, with `DashboardActivity` underneath in our task (URI grants preserved per its class-header note).
+- `MainActivity.onStartTapped`: now just `startWatchapp` + `startRecording`. The earlier-iteration `openApp` call there is removed.
+- Spec §5.2.2 updated with the corrected flow.
 - `openApp` was already defined and used by `FirstLaunchScreen`'s "Open OpenTracks settings" button; no helper changes.
 
 **Alternatives considered:**
