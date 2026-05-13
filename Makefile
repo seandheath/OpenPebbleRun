@@ -5,8 +5,8 @@
 
 .PHONY: all build test run install clean lint fmt help \
         pebble-setup pebble-setup-clean \
-        companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt \
-        watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt
+        companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt companion-logs companion-uninstall \
+        watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt watchapp-logs
 
 all: build
 
@@ -20,6 +20,8 @@ help:
 	@echo "  clean              remove build artifacts"
 	@echo "  lint               run linters"
 	@echo "  fmt                apply formatters"
+	@echo "  companion-logs     tag-filtered logcat for the companion app"
+	@echo "  watchapp-logs      stream pebble logs from the watch (via phone)"
 	@echo ""
 	@echo "Pebble SDK bootstrap (normally automatic in \`nix develop\`):"
 	@echo "  pebble-setup       install pebble-tool via uv + 'pebble sdk install latest'"
@@ -62,7 +64,7 @@ fmt:     companion-fmt     watchapp-fmt
 # === Companion delegation ===
 # Static pattern rule: forces the recipe to run for each named phony target.
 
-companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt: companion-% :
+companion-build companion-test companion-run companion-install companion-clean companion-lint companion-fmt companion-logs companion-uninstall: companion-% :
 	@if [ ! -f companion/Makefile ]; then \
 	  echo "[skip] companion/Makefile not present yet ($*)"; \
 	else \
@@ -72,7 +74,7 @@ companion-build companion-test companion-run companion-install companion-clean c
 # === Watchapp delegation ===
 # `pebble` must be on PATH. If not, every target is a no-op skip.
 
-watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt: watchapp-% :
+watchapp-build watchapp-test watchapp-run watchapp-install watchapp-clean watchapp-lint watchapp-fmt watchapp-logs: watchapp-% :
 	@if ! command -v pebble >/dev/null 2>&1; then \
 	  echo "[skip] pebble not on PATH — install Pebble SDK from https://help.rebble.io/sdk/ ($*)"; \
 	elif [ ! -f watchapp/Makefile ]; then \
