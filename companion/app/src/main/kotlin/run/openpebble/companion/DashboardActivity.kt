@@ -1,5 +1,7 @@
 package run.openpebble.companion
 
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -10,6 +12,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
+import run.openpebble.companion.pebble.PebbleListenerService
 import run.openpebble.companion.pebble.PebbleMessenger
 import run.openpebble.companion.pebble.RunSession
 
@@ -60,6 +63,20 @@ class DashboardActivity : ComponentActivity() {
         RunSession.trackUri = trackUri
         RunSession.trackPointsUri = trackPointsUri
         RunSession.active = true
+
+        // Promote the listener service to foreground for the duration of the
+        // run (spec §5.1). startForegroundService is called from this
+        // Activity's foreground context, so the FGS-from-background gate
+        // doesn't apply; the service's onStartCommand handles the action by
+        // calling startForeground within the OS's 5 s deadline. Demotion is
+        // wired through handleStop on CMD_STOP and defensively in onDestroy.
+        val promoteIntent = Intent(this, PebbleListenerService::class.java)
+            .setAction(PebbleListenerService.ACTION_PROMOTE_FOREGROUND)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(promoteIntent)
+        } else {
+            startService(promoteIntent)
+        }
 
         // Tell the watch the run is recording. Watch transitions from idle to
         // the active-run window on receipt. Spec §7.2 key 110. The service's

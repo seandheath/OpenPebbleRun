@@ -257,6 +257,28 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Wire promoteToForeground from DashboardActivity
+
+**Decision:** Resolve the orphan flagged in the prior sweep commit. `PebbleListenerService.onStartCommand` now handles a new `ACTION_PROMOTE_FOREGROUND` action by calling `promoteToForeground()`. `DashboardActivity.onCreate` fires `startForegroundService` with that action after stashing the dashboard URIs and before sending `RUN_STARTED` to the watch.
+
+**Rationale:** Without this wiring, the service ran in plain bound state for the whole run — Android can reap bound services under memory pressure, which on long runs would silently kill our poll loop. The standard mitigation is a foreground service with an ongoing low-importance notification, per spec §5.1. The prior sweep commit removed the only caller (`handleStart`) but kept the helper around; this commit gives it back its (correctly-placed) caller.
+
+**Why startForegroundService over a static-instance hack:**
+- Standard Android pattern; survives the service not yet being bound.
+- DashboardActivity is foreground when OpenTracks calls back, so the "started from foreground context" rule that gates `startForegroundService` is satisfied — no `ForegroundServiceStartNotAllowedException` risk.
+- Gives us the OS-enforced 5 s deadline to call `startForeground`; the override calls `promoteToForeground` directly, well within budget.
+- No new dependency on instance/lifecycle ordering between Pebble's bind and OpenTracks's callback.
+
+**Implementation notes:**
+- `PebbleListenerService.kt`: new companion-object const `ACTION_PROMOTE_FOREGROUND`, new `onStartCommand` override returning `START_NOT_STICKY` (Pebble Android rebinds on next watchapp open — that's the right re-entry trigger). Dropped the `@Suppress("unused")` annotation and orphan-TODO comment from `promoteToForeground` and its section comment.
+- `DashboardActivity.kt`: adds `import android.content.Intent`, `android.os.Build`, and `PebbleListenerService`. New `startForegroundService` / `startService` branch in `onCreate` after `RunSession.active = true`.
+- `BasePebbleListenerService` (PebbleKitAndroid2 1.1.0) extends `android.app.Service` directly and only overrides `onBind`; verified by inspection of the published AAR. Adding `onStartCommand` to our subclass is safe.
+- Demotion path unchanged: `handleStop` calls `demoteFromForeground` on CMD_STOP, and `onDestroy` has a defensive `stopForeground` for the torn-down-mid-run case.
+
+**Alternatives considered:**
+- *Static `liveInstance: PebbleListenerService?` + `promoteForRun()` companion method.* Simpler in line count but races the Pebble Android app's bind callback — if `DashboardActivity` runs before `onCreate` fires, `liveInstance` is null and we silently skip promotion. `startForegroundService` removes the race.
+- *Bind from DashboardActivity and call promoteToForeground directly via the IBinder.* Extra ServiceConnection lifecycle for no real win.
+
 ## 2026-05-14 — Sweep dead CMD_START / RUN_FAILED protocol
 
 **Decision:** Remove key 1 (`CMD_START`) and key 111 (`RUN_FAILED`) from both watch and companion sides, including all surrounding code (`PebbleMessenger.sendRunFailed`, `PebbleListenerService.handleStart`, the `Keys.CMD_START` / `Keys.RUN_FAILED` consts, and the `KEY_CMD_START` / `KEY_RUN_FAILED` `#define`s in `watchapp/src/c/app_message.h`). Spec §7's protocol table is collapsed to one Watch→Companion row (`CMD_STOP`) and four Companion→Watch rows (`RUN_STARTED`, `PACE_CURRENT`, `TIME`, `DISTANCE`). Numbers 1 and 111 remain pinned and unallocated.

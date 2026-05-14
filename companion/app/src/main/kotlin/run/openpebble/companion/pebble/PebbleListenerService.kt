@@ -121,21 +121,35 @@ class PebbleListenerService : BasePebbleListenerService() {
         super.onDestroy()
     }
 
+    /**
+     * Handle the [ACTION_PROMOTE_FOREGROUND] kick from DashboardActivity.
+     * Called when OpenTracks's dashboard callback lands in our process —
+     * DashboardActivity uses `startForegroundService`, so Android requires
+     * us to call `startForeground` within ~5 s. [promoteToForeground] does
+     * exactly that. Other Intent actions (currently none) flow through to
+     * the default Service behavior.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_PROMOTE_FOREGROUND) {
+            Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → promoteToForeground")
+            promoteToForeground()
+        }
+        // START_NOT_STICKY: if the process is killed, don't try to restart the
+        // service from the system. The Pebble Android app re-binds us on the
+        // next watchapp open, which is the right re-entry trigger.
+        return START_NOT_STICKY
+    }
+
     // === Foreground-service plumbing (spec §5.1) ===
     //
     // Promoted to foreground while a run is active so the OS doesn't reap us
-    // mid-run and so the subsequent CMD_STOP → publicapi.StopRecording
-    // dispatch gets BAL allowance from a backgrounded process. Notification
-    // is "ongoing" with LOW importance (silent). Matches OpenTracks's own
-    // TrackRecordingService pattern.
-    //
-    // <!-- TODO — promoteToForeground is currently orphaned: the only caller
-    //      (handleStart) was removed when the watch-initiated start path
-    //      retired. The intended new caller is DashboardActivity.onCreate
-    //      (spec §5.1: "Foreground promotion is initiated by
-    //      DashboardActivity"); wire that up in a follow-up so long runs
-    //      survive OS pressure. demoteFromForeground stays wired through
-    //      handleStop + onDestroy. -->
+    // mid-run and so the CMD_STOP → publicapi.StopRecording dispatch gets BAL
+    // allowance from a backgrounded process. Promotion is kicked from
+    // DashboardActivity.onCreate via startForegroundService(ACTION_PROMOTE_
+    // FOREGROUND) — see onStartCommand above. Demotion runs in handleStop
+    // when CMD_STOP arrives, with a defensive demote in onDestroy. The
+    // notification is "ongoing" with LOW importance (silent). Matches
+    // OpenTracks's own TrackRecordingService pattern.
 
     /** Lazy create the recording channel. Safe to call on every promotion. */
     private fun ensureRecordingChannel() {
@@ -174,7 +188,6 @@ class PebbleListenerService : BasePebbleListenerService() {
             .build()
     }
 
-    @Suppress("unused")  // Orphaned pending rewire — see section comment above.
     private fun promoteToForeground() {
         ensureRecordingChannel()
         val notif = buildRecordingNotification()
@@ -387,6 +400,16 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     companion object {
         private const val TAG = "PebbleListenerService"
+
+        /**
+         * Intent action sent by DashboardActivity (via startForegroundService)
+         * to request the service promote itself to a foreground service for
+         * the duration of the run. Spec §5.1: "Foreground promotion is
+         * initiated by DashboardActivity." Demotion happens in `handleStop`
+         * when CMD_STOP arrives from the watch, and defensively in onDestroy.
+         */
+        const val ACTION_PROMOTE_FOREGROUND =
+            "run.openpebble.companion.action.PROMOTE_FOREGROUND"
 
         /**
          * Poll cadence for the OpenTracks Dashboard URIs. 5 s matches the
