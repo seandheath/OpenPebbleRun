@@ -20,19 +20,24 @@ import java.util.concurrent.Executor
  * paired companion device" (see [the BAL docs](https://developer.android.com/guide/components/activities/background-starts),
  * condition #11). Without the association, watch-initiated CMD_STOP is
  * silently BAL_BLOCKed on Android 14+ once the FGS BAL window (~10 s)
- * lapses.
+ * lapses — observed in real-hardware testing.
  *
- * Filter choice — Phase 1 final attempt: the Pebble Time 2 is a **DUAL**
- * (BR/EDR + LE) bonded device that doesn't advertise while the Pebble
- * Android app holds its GATT connection. Every previous variant
- * (classic+setAddress, LE+setDeviceAddress, with/without
- * DEVICE_PROFILE_WATCH) saw the dialog scan return 0 matches.
- *
- * This pass uses the most permissive classic-BT filter we can build:
- * empty `BluetoothDeviceFilter` + `setSingleDevice(false)`. The dialog
- * shows the system's full classic-BT picker. If Android includes the
- * bonded Pebble in that picker, the user can tap it manually. If it
- * doesn't, see plan Phase 2 (revert and document the limitation).
+ * Filter shape — load-bearing. AOSP's
+ * `CompanionDeviceDiscoveryService.checkBoundDevicesIfNeeded()` (see
+ * `packages/CompanionDeviceManager/src/com/android/companiondevicemanager/
+ * CompanionDeviceDiscoveryService.java`) only consults
+ * `BluetoothAdapter.getBondedDevices()` — i.e. takes the "no scan
+ * required" fast path that surfaces the watch even when it isn't BLE-
+ * advertising — when **all** of: (a) at least one classic
+ * [BluetoothDeviceFilter] is present, (b) the filter has
+ * `setAddress(...)` set, (c) `setSingleDevice(true)`. The Pebble bonded
+ * record (`Pebble 822B  DUAL  cod:0-1f-0`) shows up in that list, so
+ * with the fast path active the system dialog displays the watch
+ * immediately. Earlier attempts that omitted any of (a)/(b)/(c)
+ * — `BluetoothLeDeviceFilter`, missing address, `setSingleDevice(false)`,
+ * or `setDeviceProfile(DEVICE_PROFILE_WATCH)` (which overrides the path
+ * and forces a scan) — all silently fell back to scanning, which the
+ * GAP-silent bonded Pebble can never satisfy.
  */
 object CdmManager {
 
@@ -56,43 +61,60 @@ object CdmManager {
     }
 
     /**
-     * Dispatch a CDM associate request. The system shows a pairing dialog
-     * listing all classic-BT devices it knows about (bonded + discovered);
-     * the user taps their Pebble. On acceptance, Android creates the
-     * association and activates `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
+     * Dispatch a CDM associate request. The system shows the bonded-device
+     * fast-path dialog (no scan), the user taps Allow, and Android
+     * activates `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
      * `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` for
-     * our UID, which together grant the BAL exemption our service needs.
+     * our UID — together they grant the BAL exemption our service needs.
      *
-     * `pebbleMac` is unused in Phase 1's permissive filter (we no longer
-     * pin the dialog to a specific address). Kept in the signature so
-     * MainActivity's call site doesn't churn if we re-introduce
-     * MAC-pinning later.
+     * Returns true if a request was dispatched, false if the prerequisites
+     * weren't met (caller can surface a hint to the user).
+     *
+     * @param pebbleMac the Pebble's BT MAC (e.g. "84:54:0A:D4:82:2B")
+     *   from PebbleKit's [io.rebble.pebblekit2.common.model.WatchIdentifier].
+     *   Required: the AOSP fast path keys off this address. Null means
+     *   the Pebble Android app hasn't reported a connected watch yet —
+     *   user should open the Pebble app and confirm the watch is
+     *   connected, then retry.
      */
-    @Suppress("UNUSED_PARAMETER")
     fun requestPairing(
         activity: ComponentActivity,
         pebbleMac: String?,
         launcher: ActivityResultLauncher<IntentSenderRequest>,
-    ) {
+    ): Boolean {
         if (Build.VERSION.SDK_INT < 26) {
             Log.w(TAG, "CDM not available below API 26; pairing not attempted")
-            return
+            return false
+        }
+        if (pebbleMac.isNullOrBlank()) {
+            // Without the MAC the bonded fast path won't trigger and the
+            // dialog falls back to active scanning, which is GAP-silent
+            // for a bonded Pebble — the dialog hangs on "Looking for a
+            // watch…". Refuse rather than offer a guaranteed-failing UX.
+            Log.w(TAG, "requestPairing: Pebble MAC unknown — connect the Pebble Android app first")
+            return false
         }
         val cdm = activity.getSystemService(Context.COMPANION_DEVICE_SERVICE)
             as? CompanionDeviceManager ?: run {
                 Log.w(TAG, "CompanionDeviceManager unavailable on this device")
-                return
+                return false
             }
 
-        // Empty classic-BT filter: match all classic BT devices. The system
-        // dialog renders a picker over the user's bonded + discovered set.
-        val deviceFilter = BluetoothDeviceFilter.Builder().build()
-        val request = AssociationRequest.Builder()
-            .addDeviceFilter(deviceFilter)
-            .setSingleDevice(false)
+        // Classic-BT filter pinned to the bonded Pebble's MAC. The system
+        // dialog short-circuits to BluetoothAdapter.getBondedDevices() and
+        // surfaces the watch instantly — no BLE advertising required.
+        val filter = BluetoothDeviceFilter.Builder()
+            .setAddress(pebbleMac)
             .build()
-
-        Log.d(TAG, "associate: requesting classic-BT picker (Phase 1 permissive filter)")
+        // setSingleDevice(true) is the *other* half of the fast-path
+        // trigger. setDeviceProfile(...) is deliberately NOT used —
+        // DEVICE_PROFILE_WATCH overrides the bonded check and forces the
+        // dialog into a "scanning for watches" mode that never finds a
+        // non-advertising Pebble.
+        val request = AssociationRequest.Builder()
+            .addDeviceFilter(filter)
+            .setSingleDevice(true)
+            .build()
 
         if (Build.VERSION.SDK_INT >= 33) {
             // Modern callback path. Android delivers the dialog
@@ -128,5 +150,6 @@ object CdmManager {
                 }
             }, /* handler= */ null)
         }
+        return true
     }
 }

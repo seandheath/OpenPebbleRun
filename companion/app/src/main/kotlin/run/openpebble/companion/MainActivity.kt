@@ -1,18 +1,12 @@
 package run.openpebble.companion
 
 import android.Manifest
-import android.bluetooth.BluetoothManager
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -62,10 +56,12 @@ class MainActivity : ComponentActivity() {
     private var paired by mutableStateOf(false)
 
     /**
-     * First-known Pebble BT MAC, pulled from PebbleKit's [WatchIdentifier].
-     * Used to pre-populate the CDM pairing dialog with a classic-BT
-     * [BluetoothDeviceFilter.setAddress] filter so the user sees their
-     * specific watch without the system having to do a discovery scan.
+     * Pebble BT MAC, pulled from PebbleKit's [WatchIdentifier] on each
+     * `refreshPebbleConnection`. Used by [CdmManager.requestPairing] to
+     * pre-populate the CDM dialog with a classic-BT
+     * [BluetoothDeviceFilter.setAddress] filter — that, combined with
+     * `setSingleDevice(true)`, triggers AOSP's bonded-device fast path
+     * so the dialog can find the watch without a BLE-advertising scan.
      */
     private var pebbleMac: String? = null
 
@@ -97,10 +93,6 @@ class MainActivity : ComponentActivity() {
         for ((perm, granted) in grants) {
             Log.d(TAG, "$perm granted=$granted")
         }
-        if (grants[Manifest.permission.BLUETOOTH_SCAN] == true) {
-            // BLUETOOTH_SCAN was the gate; now that it's granted, retry the probe.
-            runBleProbe()
-        }
     }
 
     /**
@@ -122,7 +114,6 @@ class MainActivity : ComponentActivity() {
         runActive = RunSession.active
         paired = CdmManager.isPaired(this)
         maybeRequestRuntimePermissions()
-        runBleProbe()
 
         setContent {
             MaterialTheme {
@@ -151,9 +142,6 @@ class MainActivity : ComponentActivity() {
         val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
             needed += Manifest.permission.BLUETOOTH_CONNECT
-        }
-        if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_SCAN)) {
-            needed += Manifest.permission.BLUETOOTH_SCAN
         }
         if (Build.VERSION.SDK_INT >= 33 && !isGranted(Manifest.permission.POST_NOTIFICATIONS)) {
             needed += Manifest.permission.POST_NOTIFICATIONS
@@ -185,14 +173,14 @@ class MainActivity : ComponentActivity() {
             pebbleConnected = watches.isNotEmpty()
             // PebbleKit's WatchIdentifier toString embeds the raw BT MAC
             // (12 hex chars, no colons). CDM's BluetoothDeviceFilter wants
-            // the colon-separated form ("C1:13:14:11:00:BD") — convert.
+            // the colon-separated form ("84:54:0A:D4:82:2B") — convert.
             pebbleMac = watches.firstOrNull()?.toString()?.let { extractMac(it) }
         }
     }
 
     /**
      * Extract a colon-separated MAC from PebbleKit's
-     * `WatchIdentifier(value=C113141100BD)` toString.
+     * `WatchIdentifier(value=84540AD4822B)` toString.
      */
     private fun extractMac(watchToStr: String): String? {
         val rawMatch = Regex("[0-9A-Fa-f]{12}").find(watchToStr) ?: return null
@@ -201,50 +189,13 @@ class MainActivity : ComponentActivity() {
 
     /** Driven by the Home screen "Pair Pebble for background access" button. */
     private fun requestPairing() {
-        CdmManager.requestPairing(this, pebbleMac, pairingLauncher)
-    }
-
-    /**
-     * Diagnostic-only: run a brief unfiltered BLE scan and log every
-     * advertisement seen. Purpose: settle "does the Pebble actually
-     * broadcast while bonded to the Pebble app?" — visible in
-     * `adb logcat | grep BleProbe`. Gated by Build.DEBUG so it doesn't
-     * ship in release builds. Auto-stops after 10 s.
-     */
-    private fun runBleProbe() {
-        Log.d("BleProbe", "runBleProbe entry")
-        if (Build.VERSION.SDK_INT >= 31 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
-                != PackageManager.PERMISSION_GRANTED) {
-            Log.d("BleProbe", "skip — BLUETOOTH_SCAN not granted")
-            return
-        }
-        val bm = getSystemService(BluetoothManager::class.java) ?: return
-        val scanner = bm.adapter?.bluetoothLeScanner ?: run {
-            Log.d("BleProbe", "skip — no LE scanner")
-            return
-        }
-        val callback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                Log.d("BleProbe", "addr=${result.device.address} name=${result.device.name ?: result.scanRecord?.deviceName} rssi=${result.rssi}")
-            }
-            override fun onScanFailed(errorCode: Int) {
-                Log.w("BleProbe", "scan failed code=$errorCode")
-            }
-        }
-        try {
-            scanner.startScan(callback)
-            Log.d("BleProbe", "scan started — listening for 10 s")
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    scanner.stopScan(callback)
-                    Log.d("BleProbe", "scan stopped")
-                } catch (e: Exception) {
-                    Log.w("BleProbe", "stopScan threw", e)
-                }
-            }, 10_000)
-        } catch (e: Exception) {
-            Log.w("BleProbe", "startScan threw", e)
+        val dispatched = CdmManager.requestPairing(this, pebbleMac, pairingLauncher)
+        if (!dispatched) {
+            // Most likely the Pebble app hasn't reported a connected watch
+            // yet. The Home screen surfaces "Pebble ✗" in that state so
+            // the user already has visible feedback; the logcat warning
+            // from CdmManager explains the cause.
+            Log.w(TAG, "CDM pairing not dispatched (Pebble MAC unknown?)")
         }
     }
 
