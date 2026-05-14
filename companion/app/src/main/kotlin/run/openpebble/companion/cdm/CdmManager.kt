@@ -103,6 +103,7 @@ object CdmManager {
         // Classic-BT filter pinned to the bonded Pebble's MAC. The system
         // dialog short-circuits to BluetoothAdapter.getBondedDevices() and
         // surfaces the watch instantly — no BLE advertising required.
+        Log.d(TAG, "requestPairing: building filter address='$pebbleMac' singleDevice=true")
         val filter = BluetoothDeviceFilter.Builder()
             .setAddress(pebbleMac)
             .build()
