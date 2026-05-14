@@ -67,30 +67,65 @@ and takes active-run directly to run-summary.
 
 #### 4.2.1 Idle
 
-Watchapp entry point. Shown until the companion confirms a run is active.
+Watchapp entry point. Shown until a run is active.
 
 ```
 ┌────────────────────────┐
 │                        │
 │    OpenPebbleRun       │   title (bold)
 │                        │
-│   Start a run on       │   prompt (regular)
-│      your phone        │
+│   Press Select       ▶ │   prompt (regular) + play icon
+│     to start           │     next to the Select gutter
 │                        │
 └────────────────────────┘
 ```
 
 - Title: "OpenPebbleRun" centered, `FONT_KEY_GOTHIC_28_BOLD`.
-- Prompt: "Start a run on your phone", wraps to two lines, `FONT_KEY_GOTHIC_18`.
+- Prompt: "Press Select to start", wraps to two lines, `FONT_KEY_GOTHIC_24`.
+- Play icon: solid right-pointing triangle at the right edge, vertically
+  aligned with the physical Select button — same column the stop-confirm
+  screen uses for its ✓/✕ icons, so the affordance reads consistently
+  across screens.
 - Inbox handler watches `KEY_RUN_STARTED`. On arrival, pushes active-run
-  (§4.2.2) on top of the stack. Covers two paths: (a) the cold-launch-with-
-  run-active case, where the companion's `PebbleListenerService.onAppOpened`
+  (§4.2.2) on top of the stack. Covers three paths: (a) the cold-launch-
+  with-run-active case, where the companion's `PebbleListenerService.onAppOpened`
   replays `RUN_STARTED` within a few hundred ms — idle is effectively a
-  brief flash; (b) the launch-then-tap-Start case, where the user opens the
-  watchapp first and then taps Start Run on the companion.
+  brief flash; (b) the launch-then-tap-Start case, where the user opens
+  the watchapp first and then taps Start Run on the companion; (c) the
+  back-from-error path on the starting screen (§4.2.1a), where idle
+  re-arms its inbox handler to keep catching the companion-initiated
+  fallback.
 - Buttons:
   - **Back**: exit the watchapp (`window_stack_pop_all`).
-  - **Select / Up / Down**: no-op. There is no on-watch start affordance.
+  - **Select**: send `CMD_START` to the companion, vibrate, and push the
+    starting screen (§4.2.1a) which waits for `RUN_STARTED` with a 15 s
+    timeout. Requires an active CDM association on the companion side —
+    see §5.1.
+  - **Up / Down**: no-op.
+
+#### 4.2.1a Starting
+
+Shown after Select pressed on idle, while waiting for the companion to
+dispatch OpenTracks's StartRecording and return `RUN_STARTED`.
+
+```
+┌────────────────────────┐
+│                        │
+│      Starting…         │
+│                        │
+└────────────────────────┘
+```
+
+- 15 s timeout. The success path is a multi-stage round trip
+  (CMD_START → companion → OpenTracks → Dashboard callback →
+  RUN_STARTED), with cold-GPS lock latency dominating the worst case.
+- On `RUN_STARTED` arrival: push active-run (§4.2.2), silently remove
+  this screen. Idle stays on the stack underneath active-run.
+- On timeout: swap title to "Couldn't start. Up = retry, Back = ok".
+  - **Up**: re-send `CMD_START`, restart the 15 s timer.
+  - **Back**: pop back to idle (re-arms idle's inbox handler so a later
+    companion-initiated start still works).
+- Other buttons inert in both states.
 
 #### 4.2.2 Active run
 
@@ -358,7 +393,18 @@ No version negotiation. Both sides ignore unknown keys.
 
 | Key | Name | Type | Payload |
 |---|---|---|---|
+| 1 | `CMD_START` | uint8 | (none) |
 | 2 | `CMD_STOP` | uint8 | (none) |
+
+`CMD_START` is sent from the idle screen (§4.2.1) when the user presses
+Select. The companion's `PebbleListenerService.handleStart` dispatches
+`OpenTracks.publicapi.StartRecording` to the variant package. Success is
+signaled implicitly via the normal Dashboard-callback path, which culminates
+in `DashboardActivity` sending `RUN_STARTED`. No negative ack — the watch's
+starting screen (§4.2.1a) times out after 15 s and offers retry. The
+service NACKs when prerequisites aren't met (no OpenTracks installed, or
+no CDM association), which surfaces at the PebbleKit layer for log
+diagnosis but produces the same watch-visible UX as a silent drop.
 
 ### 7.2 Companion → Watch
 
@@ -370,11 +416,14 @@ No version negotiation. Both sides ignore unknown keys.
 | 122 | `TIME` | uint32 | seconds |
 | 123 | `DISTANCE` | uint32 | hundredths of a mile |
 
-`RUN_STOPPED` is sent after every `stopRecording` dispatch, whether the
-stop was initiated by the watch (CMD_STOP) or by the companion's Stop
-Run button. It's the application-level "stop completed" ack — the
-stopping screen (§4.2.4) waits on it before showing run-summary, and
-active-run (§4.2.2) uses it to leave its screen during a
+`RUN_STARTED` is sent from `DashboardActivity.onCreate` after OpenTracks
+calls us back with the Track / TrackPoints URIs, for both watch-initiated
+(§4.2.1) and companion-initiated start. `RUN_STOPPED` is sent after every
+`stopRecording` dispatch, whether the stop was initiated by the watch
+(CMD_STOP) or by the companion's Stop Run button. They are the
+application-level "start/stop completed" acks — the starting screen
+(§4.2.1a) and stopping screen (§4.2.4) wait on them before transitioning,
+and active-run (§4.2.2) uses `RUN_STOPPED` to leave its screen during a
 companion-initiated stop.
 
 ### 7.3 Update cadence
@@ -391,10 +440,24 @@ companion-initiated stop.
 - Companion: OpenTracks continues recording
 - On reconnect: full brightness, no alert
 
-### 8.2 Run start fails
+### 8.2 Run start fails (watch-initiated)
 
-- Watch shows "Couldn't start. Open companion app on phone." for 5s, then returns to pre-run
-- Companion logs to `Log.w` only (no in-app log viewer)
+- Watch's starting screen (§4.2.1a) times out at 15 s and swaps to
+  "Couldn't start. Up = retry / Back = ok". Up re-sends `CMD_START` and
+  restarts the timer; Back pops to idle.
+- Common cause: no CDM association on the companion side, so the
+  `startActivity` dispatch silently BAL_BLOCKs. `PebbleListenerService`
+  NACKs the message with a `Log.w` pointing at the Home-screen "Pair
+  Pebble for background access" button. No in-app log viewer.
+- Other cause: AppMessage never reached the companion (Pebble app
+  closed, BT disconnected). Same UX — retry is the watch's only local
+  recovery surface.
+
+### 8.2a Run start fails (companion-initiated)
+
+- Companion's Start Run button: if OpenTracks isn't installed or the
+  variant detection returns null, `OpenTracksApi.startRecording` logs a
+  warning and the Home screen surfaces the result via existing UI hints.
 
 ### 8.3 OpenTracks crashes / phone GPS lost
 

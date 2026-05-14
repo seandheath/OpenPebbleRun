@@ -7,10 +7,17 @@
  * indirection and let the Kotlin side reference the same numbers directly.
  *
  * Watch → Companion:
+ *   1   CMD_START      uint8  (no payload; idle screen Select → ask companion
+ *                              to dispatch OpenTracks StartRecording. Ack is
+ *                              the companion's RUN_STARTED on success; no
+ *                              negative ack — the watch times out the
+ *                              `starting` screen after 15 s and offers retry.)
  *   2   CMD_STOP       uint8  (no payload)
  *
  * Companion → Watch:
- *   110 RUN_STARTED    uint8  (no payload)
+ *   110 RUN_STARTED    uint8  (no payload; ack for CMD_START and also pushed
+ *                              by companion-initiated start once OpenTracks
+ *                              has called us back with the Dashboard URIs)
  *   111 RUN_STOPPED    uint8  (no payload; ack for CMD_STOP, also sent on
  *                              companion-initiated stop)
  *   120 PACE_CURRENT   uint16 (sec/mi, capped 3600)
@@ -25,6 +32,7 @@
 #include <pebble.h>
 
 // Watch → Companion
+#define KEY_CMD_START    1
 #define KEY_CMD_STOP     2
 
 // Companion → Watch
