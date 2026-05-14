@@ -38,18 +38,21 @@
 
         FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to
         match the service's android:foregroundServiceType="connectedDevice"
-        declaration. POST_NOTIFICATIONS is requested at runtime in
-        MainActivity on API 33+; if denied the service still gets
-        foreground state (just no visible notification), so the
-        watch-driven flow keeps working.
+        declaration.
+
+        POST_NOTIFICATIONS is deliberately NOT requested. Android
+        requires a Notification object on every startForeground call but
+        the permission only controls *visibility* — on API 33+ the FGS
+        notification is hidden by default without the permission, which
+        is what we want here. OpenTracks already posts its own ongoing
+        recording notification (spec §11), so ours would be redundant
+        in the shade. Users who want our tap-to-open-Home affordance can
+        enable the Recording channel via system notification settings.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
         android:minSdkVersion="34" />
-    <uses-permission
-        android:name="android.permission.POST_NOTIFICATIONS"
-        android:minSdkVersion="33" />
 
     <!--
         CompanionDeviceManager BAL exemption (spec §5.1). Both are

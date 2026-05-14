@@ -447,6 +447,20 @@ Applied symmetrically to `stopRecording` because the same class of bug would sur
 - *Detect "already recording" in `handleStart` and short-circuit by sending `RUN_STARTED` directly (no `StartRecording` dispatch)* — viable when `RunSession.active` is true, but only covers the case where our companion knows about the active run. The root-cause bug is in Intent dispatch routing, and fixing it at the dispatch level also helps any future code path that needs to fire publicapi Intents reliably.
 - *Override the listener service's `taskAffinity` to mismatch OpenTracks's* — would dodge the affinity-match reuse, but our service is not the source of the affinity match (it's `publicapi.StartRecording`'s declared affinity that controls task assignment). No effect.
 
+## 2026-05-14 — Drop the `POST_NOTIFICATIONS` runtime permission
+
+**Decision:** Remove the `POST_NOTIFICATIONS` `<uses-permission>` from the manifest and the corresponding branch in `MainActivity.maybeRequestRuntimePermissions`. The `PebbleListenerService` notification object is untouched — it's still built and passed to `startForeground` because Android's FGS contract requires it.
+
+**Rationale:** The permission only governs *visibility* of the notification on API 33+; the FGS itself works regardless. We were paying for one extra first-launch permission dialog just to make our "Recording — see your watch" notification visible alongside OpenTracks's own ongoing recording notification, which is functionally the same thing for the user. Dropping the request halves the first-launch dialog count (from BLUETOOTH_CONNECT + POST_NOTIFICATIONS to just BLUETOOTH_CONNECT) and de-clutters the shade during a run. The FGS — the actual mechanism keeping us alive when the watchapp is closed during a long backgrounded run — is unchanged.
+
+Users who *do* want our tap-to-open-Home affordance can enable our Recording channel via system notification settings (App info → Notifications → Recording). No in-app surface for this; it's a minority case and the system path is the standard way to grant per-channel notification visibility.
+
+**Alternatives considered:**
+- *Drop the FGS entirely* — gives up OOM-killer immunity. On the explicit spec §4.2.2 "Back exits watchapp, run keeps recording" path, the service would be reaped on aggressive vendors (Samsung, Xiaomi) after minutes. Watch metrics freeze until next watchapp open. The actual GPX recording is unaffected (OpenTracks's own FGS handles that), but the watch-as-display promise breaks. Rejected — the visibility savings aren't worth that regression.
+- *Keep the request but auto-deny / preselect-deny* — Android doesn't expose an "ask but recommend deny" affordance. Either we ask (granting becomes the default obvious answer) or we don't.
+- *Build the notification object lazily / conditionally* — `startForeground` requires it unconditionally. No path to "no notification at all" while keeping FGS.
+- *Use a different `foregroundServiceType`* that doesn't require a notification — none of the FGS types skip the Notification requirement. `connectedDevice` is the right type for our use anyway.
+
 ## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
 
 **Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
