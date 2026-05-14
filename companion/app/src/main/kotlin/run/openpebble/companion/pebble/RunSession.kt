@@ -4,10 +4,10 @@ import android.net.Uri
 
 /**
  * Process-scoped run-session state shared between `PebbleListenerService`
- * (which owns the poll loop + ContentObservers and handles CMD_START / STOP)
- * and `DashboardActivity` (which receives OpenTracks's dashboard callback and
- * is the original URI grant target). Both run in the same process — a
- * @Volatile singleton is sufficient.
+ * (which owns the poll loop + ContentObservers and handles CMD_STOP from the
+ * watch) and `DashboardActivity` (which receives OpenTracks's dashboard
+ * callback and is the original URI grant target). Both run in the same
+ * process — a @Volatile singleton is sufficient.
  *
  * Spec §11 explicitly accepts no state persistence across companion restarts,
  * so DataStore / SharedPreferences are unnecessary here.

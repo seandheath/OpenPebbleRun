@@ -327,18 +327,20 @@ No version negotiation. Both sides ignore unknown keys.
 
 | Key | Name | Type | Payload |
 |---|---|---|---|
-| 1 | `CMD_START` | uint8 | (none) |
 | 2 | `CMD_STOP` | uint8 | (none) |
+
+Key 1 (`CMD_START`) is retired. It carried the watch-initiated start path through the pre-run screen; v0.1 initiates runs from the companion's Home screen instead (§5.2.2). Number 1 stays pinned and unallocated.
 
 ### 7.2 Companion → Watch
 
 | Key | Name | Type | Payload |
 |---|---|---|---|
 | 110 | `RUN_STARTED` | uint8 | (none) |
-| 111 | `RUN_FAILED` | uint8 | (none) |
 | 120 | `PACE_CURRENT` | uint16 | sec/mi (capped 3600) |
 | 122 | `TIME` | uint32 | seconds |
 | 123 | `DISTANCE` | uint32 | hundredths of a mile |
+
+Key 111 (`RUN_FAILED`) is retired together with `CMD_START` — it was the start-failure response. Number 111 stays pinned and unallocated.
 
 Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — they were defined for the deferred external-HR feature (§4.3) and remain unallocated until that work resumes.
 

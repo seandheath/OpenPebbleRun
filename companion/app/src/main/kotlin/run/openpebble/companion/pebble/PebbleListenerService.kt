@@ -41,14 +41,13 @@ import java.util.UUID
  * recents (the Activity itself may be stopped) the URIs remain usable.
  *
  * Watch → Companion keys handled here:
- *   1  CMD_START → fire OpenTracksApi.startRecording
- *   2  CMD_STOP  → fire OpenTracksApi.stopRecording (still BAL-blocks; bug #14)
+ *   2  CMD_STOP → fire OpenTracksApi.stopRecording
  *
- * RUN_STARTED is sent from `DashboardActivity.onCreate` (when OpenTracks
- * actually invokes us back with the Track URIs) rather than from here — firing
- * RUN_STARTED on receipt of CMD_START would lie about state if OpenTracks
- * is misconfigured or denies the intent. Watch's 15 s timeout (spec §4.2.1)
- * covers the failure path.
+ * `RUN_STARTED` is sent from `DashboardActivity.onCreate` (when OpenTracks
+ * invokes us back with the Track URIs), not from here. The matching
+ * `CMD_START` half of the protocol was retired with pre-run — runs are now
+ * initiated by MainActivity's Start Run button (spec §5.2.2). See
+ * docs/log.md 2026-05-14 "Sweep dead CMD_START / RUN_FAILED protocol".
  *
  * Per the library docs, **received numbers always arrive as UInt32 or Int32
  * regardless of the wire size the watch used**, so we test for either to be
@@ -124,11 +123,19 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     // === Foreground-service plumbing (spec §5.1) ===
     //
-    // Promoted to foreground between CMD_START and CMD_STOP so Android 12+
-    // Background Activity Launch policy lets us dispatch OpenTracks's
-    // publicapi.Start/StopRecording activities (bug #14). Pattern matches
-    // OpenTracks's own TrackRecordingService. Notification is "ongoing" with
-    // LOW importance (silent).
+    // Promoted to foreground while a run is active so the OS doesn't reap us
+    // mid-run and so the subsequent CMD_STOP → publicapi.StopRecording
+    // dispatch gets BAL allowance from a backgrounded process. Notification
+    // is "ongoing" with LOW importance (silent). Matches OpenTracks's own
+    // TrackRecordingService pattern.
+    //
+    // <!-- TODO — promoteToForeground is currently orphaned: the only caller
+    //      (handleStart) was removed when the watch-initiated start path
+    //      retired. The intended new caller is DashboardActivity.onCreate
+    //      (spec §5.1: "Foreground promotion is initiated by
+    //      DashboardActivity"); wire that up in a follow-up so long runs
+    //      survive OS pressure. demoteFromForeground stays wired through
+    //      handleStop + onDestroy. -->
 
     /** Lazy create the recording channel. Safe to call on every promotion. */
     private fun ensureRecordingChannel() {
@@ -167,6 +174,7 @@ class PebbleListenerService : BasePebbleListenerService() {
             .build()
     }
 
+    @Suppress("unused")  // Orphaned pending rewire — see section comment above.
     private fun promoteToForeground() {
         ensureRecordingChannel()
         val notif = buildRecordingNotification()
@@ -317,8 +325,7 @@ class PebbleListenerService : BasePebbleListenerService() {
         }
 
         return when {
-            data.containsKey(Keys.CMD_START) -> handleStart()
-            data.containsKey(Keys.CMD_STOP)  -> handleStop()
+            data.containsKey(Keys.CMD_STOP) -> handleStop()
             else -> {
                 Log.d(TAG, "Unknown keys in inbox: ${data.keys}")
                 ReceiveResult.Nack
@@ -329,42 +336,21 @@ class PebbleListenerService : BasePebbleListenerService() {
     /**
      * Resolve the OpenTracks variant package. Tries the SharedPreferences cache
      * first (populated by MainActivity), then falls back to a live PackageManager
-     * probe. The probe is cheap (four `getPackageInfo` lookups) and also refreshes
-     * the cache as a side-effect — so a watch-initiated CMD_START works even
-     * when the user has never opened the companion app, which is the canonical
-     * UX (the watch is the control surface).
+     * probe. The fallback exists for defence in depth: in the canonical v0.1
+     * flow MainActivity has been opened before any run starts, so the cache is
+     * always warm by the time we hit `handleStop`. The probe is cheap (four
+     * `getPackageInfo` lookups) and refreshes the cache as a side-effect, so
+     * an evicted cache doesn't break the stop path.
      */
     private fun resolveVariant(): String? =
         OpenTracksVariant.cached(this) ?: OpenTracksVariant.detect(this).pkg
 
-    private fun handleStart(): ReceiveResult {
-        val pkg = resolveVariant() ?: run {
-            Log.w(TAG, "CMD_START but no OpenTracks variant installed")
-            // Fire-and-forget RUN_FAILED so the watch doesn't sit on the 15 s
-            // "Starting…" timeout when we know it'll never succeed.
-            coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
-            return ReceiveResult.Nack
-        }
-        Log.d(TAG, "CMD_START → startRecording($pkg)")
-        // Promote *before* dispatching: foreground state grants the BAL
-        // allowance Android 12+ requires for the subsequent startActivity.
-        // Bug #14 fix; see class header.
-        promoteToForeground()
-        val ok = OpenTracksApi.startRecording(this, pkg)
-        if (!ok) {
-            demoteFromForeground()
-            coroutineScope.launch { PebbleMessenger.sendRunFailed(this@PebbleListenerService) }
-            return ReceiveResult.Nack
-        }
-        // RUN_STARTED is sent from DashboardActivity.onCreate when OpenTracks
-        // actually calls back. See class header for rationale.
-        return ReceiveResult.Ack
-    }
-
     private fun handleStop(): ReceiveResult {
         val pkg = resolveVariant() ?: return ReceiveResult.Nack
         Log.d(TAG, "CMD_STOP → stopRecording($pkg)")
-        // Stay foreground for the dispatch (BAL still required), then demote.
+        // BAL applies to startActivity from a backgrounded service; the
+        // service's foreground state from the active run satisfies it. After
+        // the dispatch, drop back to a plain bound service.
         OpenTracksApi.stopRecording(this, pkg)
         demoteFromForeground()
         // Clear RunSession so onAppOpened doesn't falsely replay RUN_STARTED on

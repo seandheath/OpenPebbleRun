@@ -64,11 +64,6 @@ object PebbleMessenger {
         send(context, mapOf(Keys.RUN_STARTED to PebbleDictionaryItem.UInt8(1)))
     }
 
-    /** Spec §7 key 111: tell watch the run failed to start. */
-    suspend fun sendRunFailed(context: Context) {
-        send(context, mapOf(Keys.RUN_FAILED to PebbleDictionaryItem.UInt8(1)))
-    }
-
     /**
      * Launch our watchapp on the connected Pebble (PebbleKit `startAppOnTheWatch`).
      * Used by the companion's Start Run button so the user doesn't have to

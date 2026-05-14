@@ -257,6 +257,25 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Sweep dead CMD_START / RUN_FAILED protocol
+
+**Decision:** Remove key 1 (`CMD_START`) and key 111 (`RUN_FAILED`) from both watch and companion sides, including all surrounding code (`PebbleMessenger.sendRunFailed`, `PebbleListenerService.handleStart`, the `Keys.CMD_START` / `Keys.RUN_FAILED` consts, and the `KEY_CMD_START` / `KEY_RUN_FAILED` `#define`s in `watchapp/src/c/app_message.h`). Spec §7's protocol table is collapsed to one Watch→Companion row (`CMD_STOP`) and four Companion→Watch rows (`RUN_STARTED`, `PACE_CURRENT`, `TIME`, `DISTANCE`). Numbers 1 and 111 remain pinned and unallocated.
+
+**Rationale:** When the idle screen replaced pre-run on 2026-05-13, `CMD_START` lost its only sender. `RUN_FAILED` was its companion-side failure response, only fired from `handleStart`. Both halves became orphans. Keeping dead protocol surface around invites confusion in future work — better to delete and let `git log` carry the history.
+
+**Implementation notes:**
+- `Keys.kt`: dropped both consts; docstring's `data[KEY_CMD_START]` example switched to `data[KEY_CMD_STOP]`.
+- `PebbleMessenger.kt`: removed `sendRunFailed`.
+- `PebbleListenerService.kt`: removed `handleStart` + its branch in `onMessageReceived`; class-level docstring + `resolveVariant` docstring rewritten to drop "watch is the control surface" framing. `promoteToForeground` is now orphaned (was only called from `handleStart`); left in the file with `@Suppress("unused")` and a TODO comment — the intended rewire is to drive it from `DashboardActivity.onCreate` so long runs survive OS pressure (spec §5.1).
+- `RunSession.kt` + `HomeScreen.kt`: comment updates only.
+- `app_message.h`: dropped both `#define`s; protocol-table comment rewritten with a note that numbers 1 / 111 stay pinned.
+
+**Side effect (deferred):** `promoteToForeground` is orphaned. Wire-up is a separate follow-up; flagged inline in the file.
+
+**Alternatives considered:**
+- *Keep the dead path for hypothetical future watch-initiated start* — premature; if that comes back it'll need fresh BAL/FGS handling anyway.
+- *Hide the constants behind a feature flag* — no feature-flag mechanism exists in v0.1; over-engineering.
+
 ## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
 
 **Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
@@ -320,7 +339,6 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:FEATURE — companion-initiated stop should also trigger watch run-summary (requires new RUN_STOPPED key; see 2026-05-13 active-run-Back entry) -->
-<!-- TODO — sweep dead companion-side CMD_START path: PebbleMessenger.sendRunFailed, PebbleListenerService.handleStart (no watch consumer after 2026-05-13 icons entry) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
