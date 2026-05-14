@@ -26,15 +26,11 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
  *  - Pebble: ✓/✗     (live from [io.rebble.pebblekit2.client.PebbleInfoRetriever])
  *  - OpenTracks: ✓ (variant name) / ✗
  *  - Primary action: **Start Run** / **Stop Run** button. Toggles by
- *    [runActive] (which mirrors `RunSession.active`). Disabled when OpenTracks
- *    isn't installed.
+ *    [runActive] (which mirrors `RunSession.active`). Disabled when
+ *    OpenTracks isn't installed.
  *
- * Spec §5.1 / §11: runs are started from this button, not from the watch.
- * Watch-initiated CMD_START still works *when the companion is foreground*,
- * but Android 12+ BAL silently blocks the dispatch from a backgrounded
- * companion. After three attempted workarounds (PendingIntent, in-service
- * `startForeground`, CompanionDeviceManager) failed on the test device, we
- * accepted the constraint for v0.1 — see docs/log.md.
+ * Runs start from this button — the watchapp has no on-watch start
+ * affordance.
  */
 @Composable
 fun HomeScreen(

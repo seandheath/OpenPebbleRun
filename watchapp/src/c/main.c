@@ -1,17 +1,16 @@
 /*
  * OpenPebbleRun watchapp entry point. Spec §4.
  *
- * v0.1 flow: launch lands on the idle screen ("OpenPebbleRun" + "Start a run
- * on your phone"). The idle screen's inbox handler watches for RUN_STARTED;
- * on arrival it pushes active-run on top. If the user opens the watchapp
- * while a run is already active, the companion's
- * PebbleListenerService.onAppOpened replays RUN_STARTED almost immediately,
- * so the idle screen is effectively transient in that case.
+ * Launch lands on the idle screen ("OpenPebbleRun" + "Start a run on your
+ * phone"). Its inbox handler watches for RUN_STARTED; on arrival it pushes
+ * active-run on top. If a run is already active when the user opens the
+ * watchapp, the companion's PebbleListenerService.onAppOpened replays
+ * RUN_STARTED almost immediately and the idle screen is transient.
  *
  * On any exit path, heart-rate sampling must be turned off (spec §4.3) to
  * stop battery drain — handled here in `deinit` so it covers every code
- * path. active_run.c's window_unload also unsubscribes; the duplicate call
- * here is idempotent and guards against future refactors that bypass it.
+ * path. active_run.c's window_unload also unsubscribes; the duplicate
+ * call here is idempotent.
  */
 
 #include <pebble.h>

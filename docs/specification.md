@@ -29,7 +29,7 @@ OpenTracks records GPS. OpenPebbleRun does not. OpenTracks must be installed.
 - Other Pebble platforms, iOS, languages other than English
 - Run state persistence/recovery across companion restarts
 - In-app diagnostics, troubleshoot screens, settings UI
-- External HR via OpenTracks (deferred — v4.27's dashboard URI no longer projects `sensor_heartrate`; revisit once core metrics are stable)
+- External HR via OpenTracks (the dashboard URI does not project `sensor_heartrate`)
 
 ## 3. Architecture
 
@@ -45,7 +45,7 @@ OpenTracks records GPS. OpenPebbleRun does not. OpenTracks must be installed.
                                       └───────────────────┘
 ```
 
-The companion uses **PebbleKitAndroid2** (`pebble-dev/PebbleKitAndroid2`, currently v0.1.0 alpha). Its bound-service architecture is woken by the Pebble companion app (`coredevices.coreapp`, min v1.0.7.7) when the watchapp opens. **No foreground service required.**
+The companion uses **PebbleKitAndroid2** (`pebble-dev/PebbleKitAndroid2`). Its bound-service architecture is woken by the Pebble companion app (`coredevices.coreapp`, min v1.0.7.7) when the watchapp opens. The bound service is promoted to a foreground service for the duration of an active run (§5.1).
 
 The companion uses OpenTracks's **Public API** (Intents) to start/stop and **Dashboard API** (content URIs + ContentObserver) for live data.
 
@@ -60,8 +60,10 @@ The companion uses OpenTracks's **Public API** (Intents) to start/stop and **Das
 
 ### 4.2 Screens
 
-Four screens. Launch lands on idle; linear transitions
-idle → active-run → stop-confirm → run-summary → (Back exits watchapp).
+Five screens. Launch lands on idle; linear transitions
+idle → active-run → stop-confirm → stopping → run-summary → (Back exits
+watchapp). Companion-initiated stop short-circuits stop-confirm + stopping
+and takes active-run directly to run-summary.
 
 #### 4.2.1 Idle
 
@@ -127,6 +129,11 @@ Buttons:
 - **Down**: open stop-confirm screen (§4.2.3).
 - **Select / Up**: no-op.
 
+Inbox: a `RUN_STOPPED` message from the companion (sent when the user
+stops the run from the companion's Stop Run button) pushes run-summary
+on top and removes this screen. The watchapp's UI stays in sync with
+OpenTracks's recording state regardless of which side initiated the stop.
+
 If AppMessages stop arriving from companion >30s: dim metrics 50% to indicate
 stale. No vibration. Resume full brightness when next message arrives.
 
@@ -147,8 +154,9 @@ indicates confirm; an X icon at the right edge aligned with Down indicates
 cancel. The centered title is the only on-screen text.
 
 Buttons:
-- **Up** (✓): send `CMD_STOP`, single short vibration on ack, transition
-  to run-summary (§4.2.4).
+- **Up** (✓): send `CMD_STOP`, single short vibration, transition to
+  the stopping screen (§4.2.4) which waits for the companion's
+  `RUN_STOPPED` ack.
 - **Down** (✕): return to active-run (which has been ticking underneath —
   its inbox handler stayed installed, so stats are up-to-date on return).
   Invariant: from active-run, pressing **Down twice** (once to enter
@@ -156,7 +164,27 @@ Buttons:
 - **Back**: mirrors Down (cancel) — Pebble convention is Back = go back.
 - **Select**: no-op.
 
-#### 4.2.4 Run summary
+#### 4.2.4 Stopping
+
+Shown after Up on stop-confirm while the companion's `RUN_STOPPED`
+acknowledgment is pending. A single centered "Stopping…" title; no
+icons.
+
+State machine:
+- **STOPPING** (entered on push). 10-second timeout. Inbox handler
+  listens for `RUN_STOPPED`. On `RUN_STOPPED`: push run-summary (§4.2.5)
+  on top, remove active-run and self from the stack.
+- **ERROR** (on timeout). Title swaps to "Couldn't stop. Up = retry,
+  Back = ok." Up resends `CMD_STOP` and re-enters STOPPING. Back falls
+  through to run-summary anyway (the run likely did stop and the user
+  can verify on the phone). Select / Down are inert in both states.
+
+This screen exists so the watch UI doesn't lie when the stop fails
+silently — Bluetooth drops, BAL-blocked intent dispatch, or OpenTracks
+misconfigurations all surface as the error state instead of an
+inappropriate run-summary.
+
+#### 4.2.5 Run summary
 
 Shown after a confirmed stop. Snapshots the run's final stats from active-run's accumulators (`s_elapsed_sec`, latest `KEY_DISTANCE`, mean of internal-HRM samples).
 
@@ -189,7 +217,7 @@ No inbox handler — a stopped run produces no further metrics.
 
 **Heart rate:**
 
-Single source — Pebble's built-in optical HRM. External HR (BLE strap via OpenTracks) is deferred; see §11.
+Single source — Pebble's built-in optical HRM. External BLE chest straps are not supported.
 
 Watch behavior:
 - On app launch: `health_service_set_heart_rate_sample_period(1)` (1 Hz). Subscribe to `HealthEventHeartRateUpdate`. Display from internal HRM.
@@ -217,8 +245,8 @@ AppMessage delivers one message at a time and ACKs each. Throttle sends to one p
 - **minSdk**: 26 (Android 8.0)
 - **targetSdk**: 35
 - **Language**: Kotlin
-- **Background**: PebbleKitAndroid2 bound service. Runs are started exclusively by tapping **Start Run** on the companion's Home screen (foreground; no Background Activity Launch restrictions apply). The watch UI offers no start affordance — the v0.1 watchapp launches onto an idle screen (§4.2.1) and waits for the companion's `RUN_STARTED` before transitioning to active-run. The watch-side `CMD_STOP` path is preserved for the in-app stop-confirm flow; this works because the user has the watchapp open (foreground) at that moment. PendingIntent, in-service `startForeground`, and CompanionDeviceManager workarounds for *watch-initiated start while companion is backgrounded* were all attempted and rejected for v0.1 (see docs/log.md).
-- **Foreground service while recording**: between Start and Stop the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. Foreground promotion is initiated by DashboardActivity (which OpenTracks calls back into our app from its own foreground context), so the FGS-from-background restriction doesn't apply. `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible.
+- **Background**: PebbleKitAndroid2 bound service. Runs are started by tapping **Start Run** on the companion's Home screen. The watchapp launches onto an idle screen (§4.2.1) and waits for the companion's `RUN_STARTED` before transitioning to active-run. The watch sends `CMD_STOP` from the in-app stop-confirm flow.
+- **Foreground service while recording**: between Start and Stop the service is promoted to foreground (`foregroundServiceType="connectedDevice"`), matching OpenTracks's `TrackRecordingService` pattern. A low-importance ongoing notification ("Recording — see your watch") is posted during a run and dismissed on stop. Foreground promotion is initiated by DashboardActivity (which OpenTracks calls back into our app from its own foreground context). `POST_NOTIFICATIONS` is requested at first launch on API 33+; if denied the service still gets foreground state — the notification simply isn't visible.
 
 ### 5.2 Screens
 
@@ -261,7 +289,7 @@ Companion derives metrics from OpenTracks Dashboard URIs and pushes to watch.
 
 Update on each Dashboard `ContentObserver` notification. Pace uses OpenTracks's reported `speed` directly — no smoothing window. When OpenTracks's dashboard cursor holds only a SEGMENT_START marker (`type = -2`, `speed = null`), pace is null and the watch renders `--:--`; once OpenTracks inserts a normal TrackPoint with a non-null `speed`, the watch updates.
 
-HR and cadence come from the watch and are displayed there directly. The companion does not read or forward HR. v4.27's dashboard `DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS` exposes only `_id, trackid, latitude, longitude, time, type, speed` — `sensor_heartrate` / `sensor_cadence` are not available — but this no longer matters for §4.3 since the dual-source state machine is removed.
+HR and cadence come from the watch and are displayed there directly. The companion does not read or forward HR.
 
 ### 5.4 OpenTracks variant detection
 
@@ -303,7 +331,7 @@ After `StartRecording` (with the *Automatic data transfer* toggle enabled — se
 - `clipData[1]` — TrackPoints URI, shape `content://de.dennisguse.opentracks.publicapi/dashboard/trackpoints/<ids>`
 - `clipData[2]` — Markers URI (unused by this app)
 
-`intent.data` is **not** populated; ignore it. Authority and path shapes verified against `DataProvider.java` (v4.27.0).
+`intent.data` is **not** populated; ignore it.
 
 **Track URI columns used** (lowercase, read by name with `getColumnIndexOrThrow`):
 - `movingtime` (long, ms)
@@ -313,7 +341,7 @@ After `StartRecording` (with the *Automatic data transfer* toggle enabled — se
 - `speed` (float, m/s)
 - `time` (long, epoch ms)
 
-The v4.27 dashboard projection (`DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS`) exposes only `_id, trackid, latitude, longitude, time, type, speed`. This is the **baseline** projection we target; tolerating missing columns is no longer a fallback strategy but the steady-state assumption. `sensor_heartrate` and `sensor_cadence` are absent and not read.
+The dashboard projection (`DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS`) exposes `_id, trackid, latitude, longitude, time, type, speed`. `sensor_heartrate` and `sensor_cadence` are not present and not read.
 
 Column identifiers are lowercase Java String constants in `TracksColumns.java` / `TrackPointsColumns.java`. SQLite is case-insensitive in unquoted SQL but Android's `Cursor.getColumnIndexOrThrow` is case-sensitive on most providers — uppercase names throw silently.
 
@@ -327,7 +355,6 @@ No version negotiation. Both sides ignore unknown keys.
 
 | Key | Name | Type | Payload |
 |---|---|---|---|
-| 1 | `CMD_START` | uint8 | (none) |
 | 2 | `CMD_STOP` | uint8 | (none) |
 
 ### 7.2 Companion → Watch
@@ -335,12 +362,17 @@ No version negotiation. Both sides ignore unknown keys.
 | Key | Name | Type | Payload |
 |---|---|---|---|
 | 110 | `RUN_STARTED` | uint8 | (none) |
-| 111 | `RUN_FAILED` | uint8 | (none) |
+| 111 | `RUN_STOPPED` | uint8 | (none) |
 | 120 | `PACE_CURRENT` | uint16 | sec/mi (capped 3600) |
 | 122 | `TIME` | uint32 | seconds |
 | 123 | `DISTANCE` | uint32 | hundredths of a mile |
 
-Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — they were defined for the deferred external-HR feature (§4.3) and remain unallocated until that work resumes.
+`RUN_STOPPED` is sent after every `stopRecording` dispatch, whether the
+stop was initiated by the watch (CMD_STOP) or by the companion's Stop
+Run button. It's the application-level "stop completed" ack — the
+stopping screen (§4.2.4) waits on it before showing run-summary, and
+active-run (§4.2.2) uses it to leave its screen during a
+companion-initiated stop.
 
 ### 7.3 Update cadence
 
@@ -387,7 +419,7 @@ Keys 113, 114, and 124 (HR source switching + forwarded HR) are reserved — the
 
 ### 10.1 Watchapp
 
-Pebble Appstore (`apps.repebble.com`). Submit `.pbw` via `dev-portal.rebble.io` or `pebble publish`. Use `package.json` (not deprecated `appinfo.json`).
+Pebble Appstore (`apps.repebble.com`). Submit `.pbw` via `dev-portal.rebble.io` or `pebble publish`. Use `package.json`.
 
 ### 10.2 Companion
 
@@ -395,7 +427,7 @@ Pebble Appstore (`apps.repebble.com`). Submit `.pbw` via `dev-portal.rebble.io` 
 
 **Secondary: F-Droid official**. Submit metadata MR to `gitlab.com/fdroid/fdroiddata`. **Reproducible builds not required.**
 
-PebbleKitAndroid2 publishes to **Maven Central** as of v1.0.0 (April 2026; see `pebble-dev/PebbleKitAndroid2/.github/workflows/publish.yml`). Coordinate: `io.rebble.pebblekit2:client`. The earlier draft of this spec warned about JitPack-only distribution; that's no longer the case and F-Droid official inclusion is not blocked on the dependency side. Reproducible builds for the companion app itself remain to be evaluated separately.
+PebbleKitAndroid2 publishes to **Maven Central** at coordinate `io.rebble.pebblekit2:client`. F-Droid official inclusion is not blocked on the dependency side. Reproducible builds for the companion app itself are evaluated separately.
 
 ### 10.3 License
 
@@ -414,12 +446,11 @@ Each: `README.md`, `LICENSE`, one-line privacy statement.
 - No pause. OpenTracks Public API has no Pause intent. To "pause," stop and start a new run, or accept that paused-stats display zero pace until you resume motion.
 - Externally-started OpenTracks recordings cannot be detected. Concurrent start behavior is whatever OpenTracks does.
 - HR from watch HRM is displayed only, not in GPX.
-- External HR (BLE strap via OpenTracks) is deferred. v4.27's dashboard `DataProvider.DATA_PROJECTIONMAP_TRACKPOINTS` omits `sensor_heartrate`, and the Pebble SDK can't act as a BLE GATT central — so the only realistic future path is companion-mediated BLE forwarding. Out of scope for v1.
 - Public API enablement is not auto-verified.
-- PebbleKitAndroid2 v1.1.0 (April 2026) is the current pinned version. Pin in `build.gradle.kts`; expect API drift across minor versions.
-- Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware as of May 2026. Buttons-only UI.
+- PebbleKitAndroid2 v1.1.0 is the pinned version; expect API drift across minor versions.
+- Pebble Time 2 touchscreen, speaker, second mic, and RGB backlight are not enabled in firmware. Buttons-only UI.
 - An ongoing notification ("Recording — see your watch") is shown while a run is active and cannot be dismissed until you stop the run. Matches OpenTracks's own behaviour; users typically see both side-by-side during the same run.
-- **Runs are started from the companion app's Home screen, not from the watch.** The watchapp launches onto an idle screen (§4.2.1) with the text "Start a run on your phone" and waits for the companion's `RUN_STARTED` before transitioning to active-run. No on-watch start affordance — pre-run was removed in v0.1. The watch retains the in-app stop path (Down → stop-confirm → Up sends `CMD_STOP`), which works because the user has the watchapp foregrounded at that moment. Three workarounds for *watch-initiated start while companion is backgrounded* were attempted in v0.1 development — PendingIntent, in-service `startForeground`, CompanionDeviceManager pairing — and each failed on Android 14+ in different ways (`ForegroundServiceStartNotAllowedException`, fragile PI lifetime, CDM scan unable to find the Pebble while connected to the Pebble Android app). v0.1 ships with the foreground-app-only start constraint; same pattern as Strava and most Android fitness apps.
+- Runs are started from the companion app's Home screen; the watchapp has no on-watch start affordance.
 
 ## 12. Testing
 
@@ -429,18 +460,11 @@ Manual only. No automated tests.
 
 Semantic versioning, both repos in lockstep. v1 release: `1.0.0`. No protocol version field — AppMessage ACKs and ignored-unknown-keys policy handle compatibility.
 
-## 14. Implementation order
+## 14. Remaining work
 
-1. Companion: Android project skeleton, OpenTracks installed-check (single F-Droid package)
-2. Companion: OpenTracks Public API (StartRecording, receive Dashboard URIs, log TrackPoint stream)
-3. Companion: derived metrics (current pace, distance, time)
-4. Watchapp: emery project skeleton, pre-run screen, AppMessage send/receive
-5. Watchapp + Companion: end-to-end run start/stop with stub metrics on watch
-6. Watchapp: active-run screen layout (5 metrics)
-7. Watchapp: HR sampling + cadence derivation (local display only)
-8. Watchapp: stop-confirm + run-summary screens
-9. Companion: home screen polish, first-launch instructions
-10. Manual testing on real PT2 + Android device
-11. IzzyOnDroid submission, Pebble Appstore submission
+- Watchapp: cadence derivation on watch (step counter → rolling SPM).
+- Companion: home screen polish; deep-link the first-launch "Open OpenTracks settings" button to the Public API settings page; surface a hint when the dashboard callback never fires.
+- Manual testing pass on real PT2 + Android device.
+- IzzyOnDroid + Pebble Appstore submissions.
 
 End of specification.

@@ -1,5 +1,6 @@
 #include "active_run.h"
 #include "stop_confirm.h"
+#include "run_summary.h"
 #include "icons.h"
 #include "../app_message.h"
 
@@ -63,9 +64,9 @@ static char s_hr_buf[12];     // "###" or "---" (worst case "4294967295")
 static char s_pace_buf[12];   // "M:SS" — gcc reasons through the <3600 cap
 static char s_dist_buf[16];   // "X.XX" worst case "4294967295.99"
 static char s_time_buf[16];   // "MM:SS" / "H:MM:SS" worst case 3×10-digit
-// Cadence has no snprintf'd buffer — value layer is set to the literal
-// "---" placeholder in window_load and isn't updated until step 7 (spec §14)
-// reads HealthMetricStepCount and writes a derived SPM here.
+// Cadence has no snprintf'd buffer — its value layer renders the literal
+// "---" placeholder. Derived cadence from HealthMetricStepCount is not yet
+// implemented.
 
 // Staleness tracking. last_inbox_ms is updated by inbox_handler; the timer
 // callback compares against `app_now_ms()` (we use a monotonic counter via
@@ -198,6 +199,18 @@ static void stale_tick_cb(void *ctx) {
 // ===== AppMessage inbox handler =====
 
 static void inbox_handler(DictionaryIterator *iter) {
+    // KEY_RUN_STOPPED arrives when the user stopped the run from the
+    // companion (Home → Stop Run). Push run-summary on top and remove
+    // ourselves; Back from the summary then exits the watchapp cleanly.
+    // For watch-initiated stops the stopping screen catches RUN_STOPPED
+    // first (it's the topmost window when CMD_STOP was sent), so this
+    // path covers the companion-initiated case specifically.
+    if (dict_find(iter, KEY_RUN_STOPPED)) {
+        run_summary_show();
+        window_stack_remove(s_window, false);
+        return;
+    }
+
     bool got_metric = false;
 
     Tuple *t = dict_find(iter, KEY_PACE_CURRENT);
@@ -224,16 +237,6 @@ static void inbox_handler(DictionaryIterator *iter) {
         text_layer_set_text(s_time_value, s_time_buf);
         got_metric = true;
     }
-    t = dict_find(iter, KEY_HR_EXTERNAL);
-    if (t) {
-        // Step 8 routes external HR; for step 6 we still accept the key if it
-        // arrives so testing of step 8 doesn't require a step-6 rebuild.
-        snprintf(s_hr_buf, sizeof(s_hr_buf), "%u", (unsigned)t->value->uint16);
-        text_layer_set_text(s_hr_value, s_hr_buf);
-        got_metric = true;
-    }
-    // KEY_HR_SOURCE_INTERNAL / KEY_HR_SOURCE_EXTERNAL (113/114): handled in step 8.
-
     if (got_metric) {
         s_last_inbox_ms = now_ms();
         if (s_dimmed) { s_dimmed = false; apply_color(false); }
@@ -242,14 +245,14 @@ static void inbox_handler(DictionaryIterator *iter) {
 
 // ===== Buttons =====
 //
-// Spec §4.2.2 (revised — see docs/log.md 2026-05-13 icons entry):
-//   Back   → exit watchapp; run keeps recording in the companion. Re-opening
-//            resumes on this screen via the companion's onAppOpened replay of
-//            RUN_STARTED while RunSession.active is true.
+// Spec §4.2.2:
+//   Back   → exit watchapp; the run keeps recording in the companion.
+//            Re-opening replays RUN_STARTED via the companion's onAppOpened
+//            while RunSession.active is true.
 //   Down   → open stop-confirm (spec §4.2.3). A small black square hint is
 //            painted at the right edge of the screen next to the physical
 //            Down button so the affordance is visible at a glance.
-//   Select/Up → no-op (no pause feature, see spec §11).
+//   Select / Up → no-op.
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *ctx) {
     // pop_all empties the window stack; Pebble exits the app when the stack
@@ -405,8 +408,8 @@ static void window_unload(Window *window) {
 
     if (s_stop_icon) { layer_destroy(s_stop_icon); s_stop_icon = NULL; }
 
-    // We're the only inbox handler in the app post-pre_run-removal; clear
-    // defensively so a lingering window pop doesn't dispatch into freed state.
+    // Clear our inbox handler so a lingering window pop doesn't dispatch
+    // into freed state.
     app_message_set_inbox_handler(NULL);
 }
 

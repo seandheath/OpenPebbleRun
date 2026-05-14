@@ -14,13 +14,10 @@ import java.util.UUID
  * lifecycle (lazy init, explicit close on run stop) so callers can fire-and-
  * forget metric updates without per-message setup overhead.
  *
- * Why a singleton rather than per-message instantiation:
- *  - [DefaultPebbleSender] internally manages a bound-service connection;
- *    constructing/closing it per Dashboard observer callback would churn the
- *    binder. The Dashboard observer fires once per OpenTracks TrackPoint —
- *    potentially a few times per second.
- *  - The companion's process is short-lived (no foreground service) so we
- *    don't need elaborate lifecycle management; close on run stop is enough.
+ * [DefaultPebbleSender] internally manages a bound-service connection;
+ * constructing/closing it per Dashboard observer callback would churn the
+ * binder. The Dashboard observer fires once per OpenTracks TrackPoint —
+ * potentially a few times per second. The singleton keeps one connection.
  *
  * Threading: all sender methods are suspend; call from a coroutine. Callers
  * launch on their own scope (e.g. `Activity.lifecycleScope`).
@@ -59,23 +56,25 @@ object PebbleMessenger {
 
     // === Send helpers ===
 
-    /** Spec §7 key 110: tell watch the run is recording. */
+    /** Tell the watch a run is recording (transitions idle → active-run). */
     suspend fun sendRunStarted(context: Context) {
         send(context, mapOf(Keys.RUN_STARTED to PebbleDictionaryItem.UInt8(1)))
     }
 
-    /** Spec §7 key 111: tell watch the run failed to start. */
-    suspend fun sendRunFailed(context: Context) {
-        send(context, mapOf(Keys.RUN_FAILED to PebbleDictionaryItem.UInt8(1)))
+    /**
+     * Tell the watch a run has stopped. Acks watch-initiated CMD_STOP (the
+     * stopping screen waits for this) and also drives the watch out of
+     * active-run when the user stops the run from the companion's Home
+     * screen instead of the watch.
+     */
+    suspend fun sendRunStopped(context: Context) {
+        send(context, mapOf(Keys.RUN_STOPPED to PebbleDictionaryItem.UInt8(1)))
     }
 
     /**
-     * Launch our watchapp on the connected Pebble (PebbleKit `startAppOnTheWatch`).
-     * Used by the companion's Start Run button so the user doesn't have to
-     * open the watchapp manually — we open it, OpenTracks then calls
-     * DashboardActivity back and the watch transitions to active-run via
-     * the existing RUN_STARTED path. Safe to call if the watchapp is already
-     * open (no-op in that case).
+     * Launch our watchapp on the connected Pebble (PebbleKit
+     * `startAppOnTheWatch`). Used by the Start Run button so the user
+     * doesn't have to open the watchapp manually. No-op if already open.
      */
     suspend fun startWatchapp(context: Context) {
         val s = getOrCreate(context)
@@ -97,8 +96,8 @@ object PebbleMessenger {
     }
 
     /**
-     * Spec §7 keys 120/122/123: live metrics from OpenTracks. Pace is omitted
-     * when null (treated as "stopped" — watch renders "--:--").
+     * Push live metrics to the watch. Pace is omitted when null (treated as
+     * "stopped" — watch renders "--:--").
      *
      * - paceSecPerMile: capped at 3600 by caller (TrackStats.paceFromSpeed).
      * - timeSec:        Track.MOVINGTIME / 1000.
@@ -136,16 +135,14 @@ object PebbleMessenger {
             return
         }
         if (result == null) {
-            // Pebble companion app not reachable (uninstalled / not the
-            // currently-selected app per PebbleAndroidAppPicker). Logged once;
-            // we won't chase this — Home shows the connection state already.
+            // Pebble companion app not reachable (uninstalled, or not the
+            // currently-selected app per PebbleAndroidAppPicker). Home
+            // already reflects the connection state.
             Log.d(TAG, "Pebble app not reachable; dropping ${dict.keys}")
             return
         }
-        // Non-success results aren't user-actionable mid-run. Spec §8.1 says
-        // dim-on-stale is the watch's job. Log for debugging only.
-        // Non-success results aren't user-actionable mid-run. Spec §8.1 says
-        // dim-on-stale is the watch's job. Log for debugging only.
+        // Non-success results aren't user-actionable mid-run — the watch
+        // dims its own metrics on staleness (spec §8.1). Log only.
         for ((watch, tr) in result) {
             if (tr !is TransmissionResult.Success) {
                 Log.d(TAG, "send to $watch: $tr")

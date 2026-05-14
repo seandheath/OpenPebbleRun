@@ -28,19 +28,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
+import run.openpebble.companion.pebble.PebbleMessenger
 import run.openpebble.companion.pebble.RunSession
 import run.openpebble.companion.ui.FirstLaunchScreen
 import run.openpebble.companion.ui.HomeScreen
 
 /**
- * Single activity entry point. Spec §5.2: first-launch instructions iff Public
- * API check fails (degraded to "OpenTracks variant not installed" — see below);
- * steady-state Home screen otherwise.
+ * Single activity entry point. Spec §5.2: first-launch instructions when
+ * no OpenTracks variant is installed; steady-state Home screen otherwise.
  *
- * The "Public API check" at this stage is degraded to "OpenTracks variant is
- * installed". Actually probing whether the Public API toggle is enabled
- * requires firing StartRecording (intrusive — starts a real track), and spec
- * §11 explicitly accepts "Public API enablement is not auto-verified".
+ * The check is "OpenTracks variant is installed", not "Public API is
+ * enabled" — probing the toggle would require firing StartRecording and
+ * actually creating a track, which is too intrusive. Spec §11 documents
+ * the gap.
  */
 class MainActivity : ComponentActivity() {
 
@@ -62,22 +62,31 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * POST_NOTIFICATIONS request handle (API 33+). The notification is for the
-     * foreground-service recording state (spec §5.1). If the user denies, the
-     * service still gets foreground state and runs normally — the notification
-     * just won't be visible in the shade.
+     * Runtime permission request handle for the dangerous permissions we need:
+     *
+     *  - **BLUETOOTH_CONNECT** (API 31+): required by PebbleKitAndroid2 for
+     *    its IPC, and — crucially — required by Android 14+'s
+     *    `connectedDevice` foreground-service-type check. Without it,
+     *    `startForeground(... FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)`
+     *    throws `SecurityException` and crashes the process the moment
+     *    DashboardActivity tries to promote PebbleListenerService.
+     *  - **POST_NOTIFICATIONS** (API 33+): for the visible recording
+     *    notification. If denied the service still gets foreground state;
+     *    the notification simply isn't shown.
      */
-    private val notificationsPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
+    private val runtimePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        for ((perm, granted) in grants) {
+            Log.d(TAG, "$perm granted=$granted")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
-        maybeRequestPostNotifications()
+        maybeRequestRuntimePermissions()
 
         setContent {
             MaterialTheme {
@@ -96,20 +105,26 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Request POST_NOTIFICATIONS on Android 13+ so the foreground-service
-     * notification (spec §5.1) shows in the shade during a run. No-op on
-     * older versions where the permission doesn't exist, and no-op if
-     * already granted.
+     * Request the runtime-dangerous permissions we need. Skips any that are
+     * already granted and any that don't exist on the current API level.
+     * Batched into a single multi-permission prompt for a smoother first
+     * launch.
      */
-    private fun maybeRequestPostNotifications() {
-        if (Build.VERSION.SDK_INT < 33) return
-        val granted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) {
-            notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    private fun maybeRequestRuntimePermissions() {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
+            needed += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !isGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+            needed += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (needed.isNotEmpty()) {
+            runtimePermissionLauncher.launch(needed.toTypedArray())
         }
     }
+
+    private fun isGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     /**
      * Probe [PebbleInfoRetriever.getConnectedWatches] for the current
@@ -174,39 +189,37 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Driven by the Home screen's Start Run button. Two-step here, plus a
-     * follow-up handoff in DashboardActivity:
-     *  1. Launch our watchapp on the Pebble via PebbleKit's `startAppOnTheWatch`
-     *     so the user doesn't have to open it manually. No-op if already open.
-     *  2. Fire StartRecording to OpenTracks from this Activity's foreground
-     *     context (no BAL issue). OpenTracks calls DashboardActivity back,
-     *     which (a) stashes the URIs in RunSession, (b) sends RUN_STARTED
-     *     to the watch, and (c) foregrounds OpenTracks's own UI via
-     *     OpenTracksApi.openApp. The watch's idle screen accepts
-     *     RUN_STARTED and transitions to active-run.
+     * Driven by the Home screen's Start Run button:
+     *  1. Open the watchapp on the Pebble via PebbleKit's
+     *     `startAppOnTheWatch` so the user doesn't have to open it manually.
+     *  2. Fire StartRecording to OpenTracks from this foreground context.
      *
-     * The foreground handoff is done from DashboardActivity, not here.
-     * Calling openApp from this method races OpenTracks's callback
-     * dispatch and lands DashboardActivity on top of OpenTracks instead
-     * of the other way around.
+     * OpenTracks then calls DashboardActivity back, which (a) stashes the
+     * URIs in RunSession, (b) sends RUN_STARTED to the watch, and (c)
+     * foregrounds OpenTracks's own UI via OpenTracksApi.openApp. The
+     * watch's idle screen accepts RUN_STARTED and transitions to
+     * active-run.
      */
     private fun onStartTapped() {
         val pkg = detection.pkg ?: return
         Log.d(TAG, "Start Run → openAppOnWatch + startRecording($pkg)")
         lifecycleScope.launch {
-            run.openpebble.companion.pebble.PebbleMessenger
-                .startWatchapp(this@MainActivity)
+            PebbleMessenger.startWatchapp(this@MainActivity)
             OpenTracksApi.startRecording(this@MainActivity, pkg)
         }
     }
 
     private fun onStopTapped() {
         val pkg = detection.pkg ?: return
-        Log.d(TAG, "Stop Run → stopRecording($pkg)")
+        Log.d(TAG, "Stop Run → stopRecording + sendRunStopped($pkg)")
         OpenTracksApi.stopRecording(this, pkg)
-        // Mirror PebbleListenerService.handleStop: drop RunSession state so
-        // the next watchapp open doesn't trigger a spurious RUN_STARTED replay.
+        // Drop RunSession state so the next watchapp open doesn't replay
+        // RUN_STARTED, and tell the watch the run is over so it can leave
+        // active-run for the run-summary screen.
         RunSession.clear()
+        lifecycleScope.launch {
+            PebbleMessenger.sendRunStopped(this@MainActivity)
+        }
     }
 
     companion object {

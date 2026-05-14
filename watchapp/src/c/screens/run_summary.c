@@ -22,7 +22,7 @@
  * s_hr_sum, s_hr_count) is still valid — the binary's BSS lives until app
  * exit, not until window destroy.
  *
- * Buttons (see docs/log.md 2026-05-13 icons entry):
+ * Buttons:
  *   Back → exits the watchapp entirely (the stack at this point is just
  *          [run_summary] — active-run and stop-confirm were removed by
  *          stop_confirm's Up handler; pop_all empties and Pebble returns the

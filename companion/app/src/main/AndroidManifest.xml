@@ -4,21 +4,20 @@
 
     <!--
         Permissions (spec §9).
-        BLUETOOTH_CONNECT is for PebbleKitAndroid2 (Android 12+). Not used yet at
-        skeleton stage, but declared so the runtime-prompt flow can be exercised
-        as soon as PebbleKit wiring lands in step 5.
 
-        Deliberately NOT requested: location, storage, notifications, foreground
-        service, internet. No QUERY_ALL_PACKAGES.
+        BLUETOOTH_CONNECT is required by PebbleKitAndroid2 on Android 12+.
+
+        Deliberately NOT requested: location, storage, internet, and
+        QUERY_ALL_PACKAGES.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!--
         Foreground-service support for run state (spec §5.1). PebbleListenerService
-        promotes itself to a foreground service while CMD_START..CMD_STOP is active
-        so Android 12+ Background Activity Launch policy lets us dispatch
-        OpenTracks's publicapi Start/StopRecording activities from a background
-        wake-up. Mirrors OpenTracks's own TrackRecordingService pattern.
+        promotes itself to a foreground service while a run is active so the OS
+        doesn't reap us mid-run and so the CMD_STOP → publicapi.StopRecording
+        dispatch gets BAL allowance from a backgrounded process. Mirrors
+        OpenTracks's own TrackRecordingService pattern.
 
         FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to match the
         service's android:foregroundServiceType="connectedDevice" declaration.

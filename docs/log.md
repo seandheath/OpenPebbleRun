@@ -257,6 +257,70 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Robust stop handoff via RUN_STOPPED ack
+
+**Decision:** Add `KEY_RUN_STOPPED` (key 111, companion → watch). The companion sends it after every `OpenTracksApi.stopRecording` dispatch — both when handling `CMD_STOP` from the watch and when the user taps Stop Run in the companion. A new `screens/stopping.{c,h}` screen is inserted between stop-confirm and run-summary; it sends `CMD_STOP`, displays "Stopping…", and waits for `RUN_STOPPED` before pushing run-summary. On a 10 s timeout it shows an error state with Up=retry / Back=fall-through-to-summary. `active_run.c`'s inbox handler also catches `RUN_STOPPED` so companion-initiated stops drop the watchapp's active-run screen to the summary directly.
+
+**Rationale:** The previous flow was fire-and-forget: stop-confirm sent `CMD_STOP` and immediately showed run-summary regardless of whether the message reached the phone or OpenTracks honored it. User reported observing OpenTracks still recording on the phone while the watch showed run-summary — the watch UI was lying. Three failure modes silently caused this: BT drops, BAL-blocked intent dispatch, and OpenTracks itself ignoring the StopRecording intent. With the explicit ack the watch surfaces all three as the timeout error, prompting retry or manual verification on the phone, rather than misleading the user.
+
+The same key also resolves the previously-open companion-initiated stop TODO — the watch now transitions out of active-run on its own when the user taps Stop Run on the companion.
+
+**Implementation notes:**
+- `app_message.h` + `Keys.kt`: define key 111 `RUN_STOPPED`.
+- `PebbleMessenger.sendRunStopped`: mirrors `sendRunStarted`.
+- `PebbleListenerService.handleStop`: after `stopRecording` + demote + `RunSession.clear()`, fires `sendRunStopped` on `coroutineScope`.
+- `MainActivity.onStopTapped`: mirrors that — fires `sendRunStopped` after `stopRecording`.
+- `screens/stopping.{c,h}`: new transition screen with a two-state machine (STOPPING → ERROR on 10 s timeout). On ack, calls `run_summary_show()` and removes active-run from the stack.
+- `stop_confirm.c`: Up handler now pushes `stopping_show()` and removes self; `active_run` stays in the stack as a fall-back during the wait.
+- `active_run.c`: inbox handler checks `KEY_RUN_STOPPED` first; on receipt pushes run-summary and removes self, skipping metric processing.
+- Spec §4.2 intro bumped to "Five screens"; new §4.2.4 "Stopping" inserted; old §4.2.4 "Run summary" renumbered to §4.2.5; §7.2 gains the `RUN_STOPPED` row.
+
+**Alternatives considered:**
+- *Watch-side silent retry every 3 s before showing an error* — adds complexity and burns radio without clear benefit if the ack mechanism is reliable. The user can always press Up to retry from the error state.
+- *Reuse stop-confirm's window for the "Stopping…" state* — state machine creep; the icons would have to be hidden, click handlers rebound. A separate screen has cleaner lifecycle.
+- *Have `handleStop` only send `RUN_STOPPED` when `stopRecording` returns true* — we tried this approach mentally but rejected it: the intent dispatch returning true is itself a "best signal we have"; OpenTracks's actual stop is async and we can't observe it directly. Sending the ack unconditionally keeps the watch's UI honest in the common case and surfaces failures via the user retrying.
+
+## 2026-05-14 — Wire promoteToForeground from DashboardActivity
+
+**Decision:** Resolve the orphan flagged in the prior sweep commit. `PebbleListenerService.onStartCommand` now handles a new `ACTION_PROMOTE_FOREGROUND` action by calling `promoteToForeground()`. `DashboardActivity.onCreate` fires `startForegroundService` with that action after stashing the dashboard URIs and before sending `RUN_STARTED` to the watch.
+
+**Rationale:** Without this wiring, the service ran in plain bound state for the whole run — Android can reap bound services under memory pressure, which on long runs would silently kill our poll loop. The standard mitigation is a foreground service with an ongoing low-importance notification, per spec §5.1. The prior sweep commit removed the only caller (`handleStart`) but kept the helper around; this commit gives it back its (correctly-placed) caller.
+
+**Why startForegroundService over a static-instance hack:**
+- Standard Android pattern; survives the service not yet being bound.
+- DashboardActivity is foreground when OpenTracks calls back, so the "started from foreground context" rule that gates `startForegroundService` is satisfied — no `ForegroundServiceStartNotAllowedException` risk.
+- Gives us the OS-enforced 5 s deadline to call `startForeground`; the override calls `promoteToForeground` directly, well within budget.
+- No new dependency on instance/lifecycle ordering between Pebble's bind and OpenTracks's callback.
+
+**Implementation notes:**
+- `PebbleListenerService.kt`: new companion-object const `ACTION_PROMOTE_FOREGROUND`, new `onStartCommand` override returning `START_NOT_STICKY` (Pebble Android rebinds on next watchapp open — that's the right re-entry trigger). Dropped the `@Suppress("unused")` annotation and orphan-TODO comment from `promoteToForeground` and its section comment.
+- `DashboardActivity.kt`: adds `import android.content.Intent`, `android.os.Build`, and `PebbleListenerService`. New `startForegroundService` / `startService` branch in `onCreate` after `RunSession.active = true`.
+- `BasePebbleListenerService` (PebbleKitAndroid2 1.1.0) extends `android.app.Service` directly and only overrides `onBind`; verified by inspection of the published AAR. Adding `onStartCommand` to our subclass is safe.
+- Demotion path unchanged: `handleStop` calls `demoteFromForeground` on CMD_STOP, and `onDestroy` has a defensive `stopForeground` for the torn-down-mid-run case.
+
+**Alternatives considered:**
+- *Static `liveInstance: PebbleListenerService?` + `promoteForRun()` companion method.* Simpler in line count but races the Pebble Android app's bind callback — if `DashboardActivity` runs before `onCreate` fires, `liveInstance` is null and we silently skip promotion. `startForegroundService` removes the race.
+- *Bind from DashboardActivity and call promoteToForeground directly via the IBinder.* Extra ServiceConnection lifecycle for no real win.
+
+## 2026-05-14 — Sweep dead CMD_START / RUN_FAILED protocol
+
+**Decision:** Remove key 1 (`CMD_START`) and key 111 (`RUN_FAILED`) from both watch and companion sides, including all surrounding code (`PebbleMessenger.sendRunFailed`, `PebbleListenerService.handleStart`, the `Keys.CMD_START` / `Keys.RUN_FAILED` consts, and the `KEY_CMD_START` / `KEY_RUN_FAILED` `#define`s in `watchapp/src/c/app_message.h`). Spec §7's protocol table is collapsed to one Watch→Companion row (`CMD_STOP`) and four Companion→Watch rows (`RUN_STARTED`, `PACE_CURRENT`, `TIME`, `DISTANCE`). Numbers 1 and 111 remain pinned and unallocated.
+
+**Rationale:** When the idle screen replaced pre-run on 2026-05-13, `CMD_START` lost its only sender. `RUN_FAILED` was its companion-side failure response, only fired from `handleStart`. Both halves became orphans. Keeping dead protocol surface around invites confusion in future work — better to delete and let `git log` carry the history.
+
+**Implementation notes:**
+- `Keys.kt`: dropped both consts; docstring's `data[KEY_CMD_START]` example switched to `data[KEY_CMD_STOP]`.
+- `PebbleMessenger.kt`: removed `sendRunFailed`.
+- `PebbleListenerService.kt`: removed `handleStart` + its branch in `onMessageReceived`; class-level docstring + `resolveVariant` docstring rewritten to drop "watch is the control surface" framing. `promoteToForeground` is now orphaned (was only called from `handleStart`); left in the file with `@Suppress("unused")` and a TODO comment — the intended rewire is to drive it from `DashboardActivity.onCreate` so long runs survive OS pressure (spec §5.1).
+- `RunSession.kt` + `HomeScreen.kt`: comment updates only.
+- `app_message.h`: dropped both `#define`s; protocol-table comment rewritten with a note that numbers 1 / 111 stay pinned.
+
+**Side effect (deferred):** `promoteToForeground` is orphaned. Wire-up is a separate follow-up; flagged inline in the file.
+
+**Alternatives considered:**
+- *Keep the dead path for hypothetical future watch-initiated start* — premature; if that comes back it'll need fresh BAL/FGS handling anyway.
+- *Hide the constants behind a feature flag* — no feature-flag mechanism exists in v0.1; over-engineering.
+
 ## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
 
 **Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
@@ -319,8 +383,6 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
-<!-- TODO:FEATURE — companion-initiated stop should also trigger watch run-summary (requires new RUN_STOPPED key; see 2026-05-13 active-run-Back entry) -->
-<!-- TODO — sweep dead companion-side CMD_START path: PebbleMessenger.sendRunFailed, PebbleListenerService.handleStart (no watch consumer after 2026-05-13 icons entry) -->
 <!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
