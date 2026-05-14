@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import run.openpebble.companion.cdm.CdmManager
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
 import run.openpebble.companion.pebble.PebbleMessenger
@@ -51,6 +53,16 @@ class MainActivity : ComponentActivity() {
     private var pebbleConnected by mutableStateOf(false)
     /** Mirrors [RunSession.active]; refreshed by a Compose tick. */
     private var runActive by mutableStateOf(false)
+    /** Mirrors [CdmManager.isPaired]; re-read on resume and after pairing. */
+    private var paired by mutableStateOf(false)
+
+    /**
+     * First-known Pebble BT MAC, pulled from PebbleKit's [WatchIdentifier].
+     * Used to pre-populate the CDM pairing dialog with a classic-BT
+     * [BluetoothDeviceFilter.setAddress] filter so the user sees their
+     * specific watch without the system having to do a discovery scan.
+     */
+    private var pebbleMac: String? = null
 
     /**
      * Cached info retriever. PebbleKitAndroid2 binds lazily on first call.
@@ -82,10 +94,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Receives the CDM pairing dialog's result. On RESULT_OK the
+     * association exists and Android grants the BAL exemption for our
+     * UID. Refresh [paired] so the Home screen updates.
+     */
+    private val pairingLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val ok = result.resultCode == RESULT_OK
+        Log.d(TAG, "CDM pairing dialog result: ok=$ok")
+        paired = CdmManager.isPaired(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
+        paired = CdmManager.isPaired(this)
         maybeRequestRuntimePermissions()
 
         setContent {
@@ -101,6 +127,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
+        paired = CdmManager.isPaired(this)
         refreshPebbleConnection()
     }
 
@@ -134,16 +161,34 @@ class MainActivity : ComponentActivity() {
      */
     private fun refreshPebbleConnection() {
         lifecycleScope.launch {
-            val connected = try {
+            val watches = try {
                 withContext(Dispatchers.IO) {
-                    infoRetriever.getConnectedWatches().firstOrNull().orEmpty().isNotEmpty()
+                    infoRetriever.getConnectedWatches().firstOrNull().orEmpty()
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "getConnectedWatches failed (Pebble app not reachable?)", e)
-                false
+                emptyList()
             }
-            pebbleConnected = connected
+            pebbleConnected = watches.isNotEmpty()
+            // PebbleKit's WatchIdentifier toString embeds the raw BT MAC
+            // (12 hex chars, no colons). CDM's BluetoothDeviceFilter wants
+            // the colon-separated form ("C1:13:14:11:00:BD") — convert.
+            pebbleMac = watches.firstOrNull()?.toString()?.let { extractMac(it) }
         }
+    }
+
+    /**
+     * Extract a colon-separated MAC from PebbleKit's
+     * `WatchIdentifier(value=C113141100BD)` toString.
+     */
+    private fun extractMac(watchToStr: String): String? {
+        val rawMatch = Regex("[0-9A-Fa-f]{12}").find(watchToStr) ?: return null
+        return rawMatch.value.uppercase().chunked(2).joinToString(":")
+    }
+
+    /** Driven by the Home screen "Pair Pebble for background access" button. */
+    private fun requestPairing() {
+        CdmManager.requestPairing(this, pebbleMac, pairingLauncher)
     }
 
     @Composable
@@ -165,7 +210,9 @@ class MainActivity : ComponentActivity() {
             HomeScreen(
                 detection = current,
                 pebbleConnected = pebbleConnected,
+                paired = paired,
                 runActive = runActive,
+                onPairTapped = ::requestPairing,
                 onStartTapped = ::onStartTapped,
                 onStopTapped = ::onStopTapped,
             )

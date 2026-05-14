@@ -257,6 +257,32 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Re-implement CompanionDeviceManager pairing (classic-BT filter)
+
+**Decision:** Re-introduce CDM pairing for the Pebble. New `cdm/CdmManager.kt` wraps `CompanionDeviceManager`. `MainActivity` registers an `ActivityResultContracts.StartIntentSenderForResult` launcher, refreshes a `paired` Compose state on resume, and routes a Home-screen button to `CdmManager.requestPairing`. The Home screen gains a third status row "Background access" (✓ Paired / ✗ Not paired) and shows an outlined "Pair Pebble for background access" button when not paired. First-launch step 4 + `PebbleListenerService.handleStop` defensive log added. Manifest re-adds `REQUEST_COMPANION_RUN_IN_BACKGROUND` + `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`. Spec §5.1 / §5.2 / §9 / §11 updated.
+
+**Rationale:** Real-hardware logcat showed `BAL_BLOCK` on watch-initiated `CMD_STOP` despite the listener service being in `FOREGROUND_SERVICE` state with `foregroundServiceType="connectedDevice"`. The 2026-05-13 log entry's working theory — "FGS state grants BAL for OpenTracks dispatches" — turns out to be wrong for run-realistic durations. Per the [official BAL documentation](https://developer.android.com/guide/components/activities/background-starts), the FGS exemption applies only for a brief window (~10 s) after the activity that promoted the service is backgrounded. Of the 13 enumerated BAL-exempt conditions, only #11 (CDM association) fits our "respond to action on a paired companion device" use case.
+
+The previous CDM attempt (2026-05-13 entry "Adopt CompanionDeviceManager for BAL exemption", code since deleted by the 2026-05-13 v0.1 pivot) failed because the filter type was `BluetoothLeDeviceFilter`. BLE filters require the device to be **actively advertising**, which the Pebble doesn't do while bonded to the Pebble Android app. The corrected filter:
+
+- **`BluetoothDeviceFilter`** (classic BT) — Pebble pairs via classic BT, not BLE.
+- **`setAddress(macAddress)`** — pre-populated with the MAC extracted from PebbleKit's `WatchIdentifier.toString()`. With an explicit MAC, the system dialog shows the bonded device without performing a discovery scan, sidestepping the BLE-advertising requirement entirely.
+- **`AssociationRequest.Builder.setDeviceProfile(DEVICE_PROFILE_WATCH)`** (API 30+) — clarifies the dialog's intent and bundles watch-appropriate permissions.
+
+Matches the approach Gadgetbridge uses in its `BondingUtil` for Pebble (verified by reading the source on Codeberg).
+
+**Implementation notes:**
+- `CdmManager.isPaired` returns true if `myAssociations.size > 0` (API 33+) / `associations.size > 0` (API 26-32).
+- The `paired` state in MainActivity is re-read in `onCreate`, `onResume`, and the pairing launcher's result callback.
+- `handleStop` doesn't gate on CDM pairing — short runs still work via the FGS window, so refusing-without-CDM would be a regression. A `Log.w` warns when no pairing is present, surfacing the "long-run stop will fail" condition in logcat.
+- `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_CONNECTED_DEVICE` + the FGS promotion stay. CDM handles BAL; FGS handles OS-kill resistance during long runs. Separable concerns.
+
+**Alternatives considered and rejected (this time):**
+- *PendingIntent with creator/sender BAL opt-in*: the BAL_BLOCK log's hypothetical fields (`resultIfPiCreatorAllowsBal: BAL_BLOCK`) showed PI opt-in alone wouldn't change the result — PI mechanisms need to be combined with one of the 13 conditions, of which #11 (CDM) is the only one that fits.
+- *Switch `foregroundServiceType` to `location` or `mediaPlayback`*: those types have permanent BAL exemption but require permission claims we don't legitimately use. Play Store / F-Droid would flag.
+- *`NotificationListenerService`*: not in the BAL-exempt list. Granting it doesn't bypass BAL.
+- *Full-screen-intent notification*: user-visible. Doesn't fit "phone in pocket" use case.
+
 ## 2026-05-14 — Bigger watchapp text
 
 **Decision:** Bump every visible glyph on the watchapp up at least one size class. Concrete changes:

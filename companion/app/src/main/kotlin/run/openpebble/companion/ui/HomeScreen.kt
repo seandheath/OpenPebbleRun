@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -25,9 +26,12 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
  * Shows:
  *  - Pebble: ✓/✗     (live from [io.rebble.pebblekit2.client.PebbleInfoRetriever])
  *  - OpenTracks: ✓ (variant name) / ✗
- *  - Primary action: **Start Run** / **Stop Run** button. Toggles by
- *    [runActive] (which mirrors `RunSession.active`). Disabled when
- *    OpenTracks isn't installed.
+ *  - Background access: ✓ Paired / ✗ Not paired — CDM association
+ *    state. When ✗, an outlined "Pair Pebble for background access"
+ *    button below the rows launches the CDM pairing dialog. Without
+ *    this, watch-initiated stop is BAL_BLOCKed on Android 14+ after
+ *    the FGS BAL window (~10 s) lapses (spec §5.1).
+ *  - Primary action: **Start Run** / **Stop Run** button.
  *
  * Runs start from this button — the watchapp has no on-watch start
  * affordance.
@@ -36,7 +40,9 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
 fun HomeScreen(
     detection: OpenTracksVariant.Detection,
     pebbleConnected: Boolean,
+    paired: Boolean,
     runActive: Boolean,
+    onPairTapped: () -> Unit,
     onStartTapped: () -> Unit,
     onStopTapped: () -> Unit,
 ) {
@@ -62,6 +68,23 @@ fun HomeScreen(
             ok = detection.isInstalled,
             detail = detection.label,
         )
+
+        StatusRow(
+            label = stringResource(R.string.home_background_access_label),
+            ok = paired,
+            detail = if (paired) stringResource(R.string.home_background_access_paired)
+                     else stringResource(R.string.home_background_access_missing),
+        )
+
+        if (!paired) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onPairTapped,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.home_pair_button))
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
         Text(
@@ -96,7 +119,7 @@ private fun StatusRow(label: String, ok: Boolean, detail: String?) {
             style = MaterialTheme.typography.titleLarge,
         )
         Text(
-            text = if (ok && detail != null) "$label  ($detail)" else label,
+            text = if (detail != null) "$label  ($detail)" else label,
             style = MaterialTheme.typography.titleMedium,
         )
     }
