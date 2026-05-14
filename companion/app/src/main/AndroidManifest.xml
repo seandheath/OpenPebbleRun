@@ -3,6 +3,17 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
+        Required by CompanionDeviceManager.associate() per Android's
+        feature gate. Without it, associate() throws IllegalStateException
+        even when the REQUEST_COMPANION_* permissions are declared.
+        required="false" because the device may not have CDM support
+        below API 26, where we silently no-op the pairing flow.
+    -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
+    <!--
         Permissions (spec §9).
 
         BLUETOOTH_CONNECT is required by PebbleKitAndroid2 on Android 12+.
