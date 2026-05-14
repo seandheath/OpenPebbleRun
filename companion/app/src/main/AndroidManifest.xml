@@ -3,27 +3,45 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
+        Required by CompanionDeviceManager.associate() per Android's
+        feature gate (spec §5.1). Without it, associate() throws
+        IllegalStateException even when the REQUEST_COMPANION_*
+        permissions are declared. required="true" — the watchapp
+        companion has no useful function without CDM-backed BAL
+        exemption for watch-initiated stop.
+    -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="true" />
+
+    <!--
         Permissions (spec §9).
 
         BLUETOOTH_CONNECT is required by PebbleKitAndroid2 on Android 12+.
+        BLUETOOTH_SCAN is deliberately NOT requested — our CDM pairing
+        uses the bonded-device fast path (classic BluetoothDeviceFilter
+        with the watch's MAC + setSingleDevice(true), see CdmManager.kt),
+        which short-circuits straight to BluetoothAdapter.getBondedDevices()
+        with no scan.
 
-        Deliberately NOT requested: location, storage, internet, and
-        QUERY_ALL_PACKAGES.
+        Deliberately NOT requested: BLUETOOTH_SCAN, location, storage,
+        internet, and QUERY_ALL_PACKAGES.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!--
-        Foreground-service support for run state (spec §5.1). PebbleListenerService
-        promotes itself to a foreground service while a run is active so the OS
-        doesn't reap us mid-run and so the CMD_STOP → publicapi.StopRecording
-        dispatch gets BAL allowance from a backgrounded process. Mirrors
-        OpenTracks's own TrackRecordingService pattern.
+        Foreground-service support for run state (spec §5.1).
+        PebbleListenerService promotes itself to a foreground service
+        while a run is active so the OS doesn't reap us mid-run, mirroring
+        OpenTracks's own TrackRecordingService pattern. BAL itself is
+        handled separately by the CDM association (see below).
 
-        FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to match the
-        service's android:foregroundServiceType="connectedDevice" declaration.
-        POST_NOTIFICATIONS is requested at runtime in MainActivity on API 33+;
-        if denied the service still gets foreground state (just no visible
-        notification), so the watch-driven flow keeps working.
+        FOREGROUND_SERVICE_CONNECTED_DEVICE is required on API 34+ to
+        match the service's android:foregroundServiceType="connectedDevice"
+        declaration. POST_NOTIFICATIONS is requested at runtime in
+        MainActivity on API 33+; if denied the service still gets
+        foreground state (just no visible notification), so the
+        watch-driven flow keeps working.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission
@@ -33,6 +51,18 @@
         android:name="android.permission.POST_NOTIFICATIONS"
         android:minSdkVersion="33" />
 
+    <!--
+        CompanionDeviceManager BAL exemption (spec §5.1). Both are
+        normal-level: declaring them is necessary, but the actual grant
+        only takes effect once the user completes the CDM pairing dialog.
+        With an active association, AOSP's BackgroundActivityStartController
+        short-circuits BAL to BAL_ALLOW_ALLOWLISTED_COMPONENT for our UID
+        — letting the listener service dispatch OpenTracks's
+        publicapi.StopRecording from a watch-button callback long after
+        the FGS BAL window has lapsed.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
 
     <!--
         Package visibility on Android 11+ (API 30+) requires explicit declarations

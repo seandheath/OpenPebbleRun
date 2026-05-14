@@ -39,6 +39,7 @@ logs:
 	@adb logcat -v time \
 	  DashboardActivity:V OpenTracksApi:V OpenTracksVariant:V \
 	  PebbleListenerService:V PebbleMessenger:V MainActivity:V \
+	  CdmManager:V \
 	  ActivityTaskManager:I '*:S'
 
 # `run` kept as an alias for backward-compatibility — semantically the same

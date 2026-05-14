@@ -257,6 +257,72 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Re-implement CompanionDeviceManager pairing (classic-BT filter)
+
+**Decision:** Re-introduce CDM pairing for the Pebble. New `cdm/CdmManager.kt` wraps `CompanionDeviceManager`. `MainActivity` registers an `ActivityResultContracts.StartIntentSenderForResult` launcher, refreshes a `paired` Compose state on resume, and routes a Home-screen button to `CdmManager.requestPairing`. The Home screen gains a third status row "Background access" (✓ Paired / ✗ Not paired) and shows an outlined "Pair Pebble for background access" button when not paired. First-launch step 4 + `PebbleListenerService.handleStop` defensive log added. Manifest re-adds `REQUEST_COMPANION_RUN_IN_BACKGROUND` + `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`. Spec §5.1 / §5.2 / §9 / §11 updated.
+
+**Rationale:** Real-hardware logcat showed `BAL_BLOCK` on watch-initiated `CMD_STOP` despite the listener service being in `FOREGROUND_SERVICE` state with `foregroundServiceType="connectedDevice"`. The 2026-05-13 log entry's working theory — "FGS state grants BAL for OpenTracks dispatches" — turns out to be wrong for run-realistic durations. Per the [official BAL documentation](https://developer.android.com/guide/components/activities/background-starts), the FGS exemption applies only for a brief window (~10 s) after the activity that promoted the service is backgrounded. Of the 13 enumerated BAL-exempt conditions, only #11 (CDM association) fits our "respond to action on a paired companion device" use case.
+
+The previous CDM attempt (2026-05-13 entry "Adopt CompanionDeviceManager for BAL exemption", code since deleted by the 2026-05-13 v0.1 pivot) failed because the filter type was `BluetoothLeDeviceFilter`. BLE filters require the device to be **actively advertising**, which the Pebble doesn't do while bonded to the Pebble Android app. The corrected filter:
+
+- **`BluetoothDeviceFilter`** (classic BT) — Pebble pairs via classic BT, not BLE.
+- **`setAddress(macAddress)`** — pre-populated with the MAC extracted from PebbleKit's `WatchIdentifier.toString()`. With an explicit MAC, the system dialog shows the bonded device without performing a discovery scan, sidestepping the BLE-advertising requirement entirely.
+- **`AssociationRequest.Builder.setDeviceProfile(DEVICE_PROFILE_WATCH)`** (API 30+) — clarifies the dialog's intent and bundles watch-appropriate permissions.
+
+Matches the approach Gadgetbridge uses in its `BondingUtil` for Pebble (verified by reading the source on Codeberg).
+
+**Implementation notes:**
+- `CdmManager.isPaired` returns true if `myAssociations.size > 0` (API 33+) / `associations.size > 0` (API 26-32).
+- The `paired` state in MainActivity is re-read in `onCreate`, `onResume`, and the pairing launcher's result callback.
+- `handleStop` doesn't gate on CDM pairing — short runs still work via the FGS window, so refusing-without-CDM would be a regression. A `Log.w` warns when no pairing is present, surfacing the "long-run stop will fail" condition in logcat.
+- `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_CONNECTED_DEVICE` + the FGS promotion stay. CDM handles BAL; FGS handles OS-kill resistance during long runs. Separable concerns.
+
+**Alternatives considered and rejected (this time):**
+- *PendingIntent with creator/sender BAL opt-in*: the BAL_BLOCK log's hypothetical fields (`resultIfPiCreatorAllowsBal: BAL_BLOCK`) showed PI opt-in alone wouldn't change the result — PI mechanisms need to be combined with one of the 13 conditions, of which #11 (CDM) is the only one that fits.
+- *Switch `foregroundServiceType` to `location` or `mediaPlayback`*: those types have permanent BAL exemption but require permission claims we don't legitimately use. Play Store / F-Droid would flag.
+- *`NotificationListenerService`*: not in the BAL-exempt list. Granting it doesn't bypass BAL.
+- *Full-screen-intent notification*: user-visible. Doesn't fit "phone in pocket" use case.
+
+## 2026-05-14 — CDM bonded-device fast path: `setAddress` + `setSingleDevice(true)`, drop `DEVICE_PROFILE_WATCH` (supersedes filter shape in the prior 2026-05-14 entry)
+
+**Decision:** The CDM `AssociationRequest` uses a classic `BluetoothDeviceFilter` with `setAddress(pebbleMac)` and `AssociationRequest.Builder.setSingleDevice(true)`. **No `setDeviceProfile(DEVICE_PROFILE_WATCH)`.** No BLE filter, no name pattern, no scan-side configuration. `CdmManager.requestPairing` refuses to dispatch with a `Log.w` if `pebbleMac` is null (PebbleKit hasn't reported a connected watch yet); the prior code's name-pattern fallback was dropped because it doesn't trigger the fast path and produces a dialog hang.
+
+**Rationale:** Empirical: with `DEVICE_PROFILE_WATCH` in place the CDM dialog stuck at "Looking for a watch…" for several minutes, and `dumpsys bluetooth_manager` confirmed it was running a 0-result BLE scan. A 10-second unfiltered `BluetoothLeScanner` probe caught ~50 nearby BLE devices but never the Pebble, confirming the watch is GAP-silent while bonded to `coredevices.coreapp`. From that we initially concluded CDM was fundamentally impossible.
+
+Then we re-read AOSP source. `CompanionDeviceDiscoveryService.checkBoundDevicesIfNeeded()` (`packages/CompanionDeviceManager/src/com/android/companiondevicemanager/CompanionDeviceDiscoveryService.java`) is the bonded-device fast path: when **all** of (a) a classic `BluetoothDeviceFilter` is present, (b) the filter has `setAddress(...)` set, (c) `request.isSingleDevice()` is true, the discovery service skips scanning and pulls candidates straight from `BluetoothAdapter.getBondedDevices()`. Code, quoted:
+
+```java
+if (btFilters.isEmpty() || !request.isSingleDevice()) return false;
+final BluetoothDeviceFilter singleMacAddressFilter =
+    find(btFilters, filter -> !TextUtils.isEmpty(filter.getAddress()));
+if (singleMacAddressFilter == null) return false;
+```
+
+`DEVICE_PROFILE_WATCH` overrides this path with a watch-flavored dialog that always scans. The prior entry's filter had (a)+(b)+(c) but the profile setting was nullifying them.
+
+**The four filter attempts that didn't work (so the next person doesn't redo them):**
+
+| Attempt | Filter | `setSingleDevice` | Hits fast path? |
+|---|---|---|---|
+| 1 | `BluetoothLeDeviceFilter` (with or without ScanFilter+address) | n/a | No — LE filter forces a BLE scan path; the bonded list is ignored. |
+| 2 | `BluetoothDeviceFilter` (classic) no fields | false | No — without an address, fast path is skipped. |
+| 3 | `BluetoothDeviceFilter.setDeviceProfile(DEVICE_PROFILE_WATCH)` + `setAddress` + `setSingleDevice(true)` | true | No — `DEVICE_PROFILE_WATCH` overrides the fast path. |
+| 4 | `BluetoothDeviceFilter.Builder().build()` permissive | false | No — neither address nor single-device → fast path skipped. |
+
+The address-on-filter + single-device requirement isn't documented at the public-API level — only AOSP source surfaces it. PebbleKitAndroid2 has no BAL guidance; the Pebble Android app (`coredevices.coreapp`, source at `github.com/coredevices/mobileapp`) exposes no IPC for relaying foreground intents either.
+
+**Other changes in this commit:**
+- Manifest drops `BLUETOOTH_SCAN` (and its `neverForLocation` flag) — the bonded fast path doesn't scan, so the permission is unnecessary.
+- `MainActivity` drops `BleProbe` (diagnostic-only) and its `BLUETOOTH_SCAN` runtime request.
+- `build.gradle.kts` drops `buildConfig = true` — was added for a `BuildConfig.DEBUG` gate on the BleProbe.
+- `CdmManager.requestPairing` now returns `Boolean` (true on dispatch, false on prerequisite failure) instead of failing silently.
+
+**Verification:** real-hardware run on Android 14+ — CDM dialog opens, shows the Pebble immediately (no spinner), tap Allow, Home shows ✓ Paired. Start a run, pocket the phone for >30 s, press the watch's stop sequence — watch transitions to run-summary and `adb logcat` shows `BAL_ALLOW_ALLOWLISTED_COMPONENT` on the `publicapi.StopRecording` dispatch.
+
+**Alternatives considered and rejected (this round):**
+- *Disconnect-pair-reconnect dance* (user disables Pebble app's BT connection so the watch starts advertising, run CDM, reconnect). Workable but ugly UX; obsolete now that the fast path works.
+- *Full-screen intent notification as BAL workaround*: user-tap-driven; defeats "phone in pocket". Kept in back-pocket as a fallback if the fast path turns out to be OEM-modified on some Android variants.
+
 ## 2026-05-14 — Bigger watchapp text
 
 **Decision:** Bump every visible glyph on the watchapp up at least one size class. Concrete changes:

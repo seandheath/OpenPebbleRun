@@ -21,6 +21,7 @@ import io.rebble.pebblekit2.common.model.WatchIdentifier
 import kotlinx.coroutines.launch
 import run.openpebble.companion.MainActivity
 import run.openpebble.companion.R
+import run.openpebble.companion.cdm.CdmManager
 import run.openpebble.companion.metrics.TrackStats
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
@@ -335,9 +336,18 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     private fun handleStop(): ReceiveResult {
         val pkg = resolveVariant() ?: return ReceiveResult.Nack
+        if (!CdmManager.isPaired(this)) {
+            // Not fatal — the FGS BAL window may still cover a short run.
+            // But on Android 14+ after ~10 s from the foreground promotion,
+            // startActivity is silently BAL_BLOCKed. Loud-log so the
+            // failure mode is obvious in logcat. The Home screen exposes a
+            // "Pair Pebble for background access" button that fixes this.
+            Log.w(TAG, "CMD_STOP but no CDM association — stop may BAL_BLOCK; open companion and pair")
+        }
         Log.d(TAG, "CMD_STOP → stopRecording($pkg)")
-        // The service's foreground state from the active run grants BAL for
-        // the startActivity. Demote afterwards.
+        // With a CDM association in place, BAL is allowed via
+        // BAL_ALLOW_ALLOWLISTED_COMPONENT. Without it, the service's
+        // FGS state may still cover the dispatch for ≤10 s after run start.
         OpenTracksApi.stopRecording(this, pkg)
         demoteFromForeground()
         // Clear RunSession so onAppOpened doesn't replay RUN_STARTED on the

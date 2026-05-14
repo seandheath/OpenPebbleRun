@@ -26,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import run.openpebble.companion.cdm.CdmManager
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
 import run.openpebble.companion.pebble.PebbleMessenger
@@ -51,6 +52,8 @@ class MainActivity : ComponentActivity() {
     private var pebbleConnected by mutableStateOf(false)
     /** Mirrors [RunSession.active]; refreshed by a Compose tick. */
     private var runActive by mutableStateOf(false)
+    /** Mirrors [CdmManager.isPaired]; re-read on resume and after pairing. */
+    private var paired by mutableStateOf(false)
 
     /**
      * Cached info retriever. PebbleKitAndroid2 binds lazily on first call.
@@ -82,10 +85,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Receives the CDM pairing dialog's result. On RESULT_OK the
+     * association exists and Android grants the BAL exemption for our
+     * UID. Refresh [paired] so the Home screen updates.
+     */
+    private val pairingLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val ok = result.resultCode == RESULT_OK
+        Log.d(TAG, "CDM pairing dialog result: ok=$ok")
+        paired = CdmManager.isPaired(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
+        paired = CdmManager.isPaired(this)
         maybeRequestRuntimePermissions()
 
         setContent {
@@ -101,6 +118,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
+        paired = CdmManager.isPaired(this)
         refreshPebbleConnection()
     }
 
@@ -134,15 +152,26 @@ class MainActivity : ComponentActivity() {
      */
     private fun refreshPebbleConnection() {
         lifecycleScope.launch {
-            val connected = try {
+            val watches = try {
                 withContext(Dispatchers.IO) {
-                    infoRetriever.getConnectedWatches().firstOrNull().orEmpty().isNotEmpty()
+                    infoRetriever.getConnectedWatches().firstOrNull().orEmpty()
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "getConnectedWatches failed (Pebble app not reachable?)", e)
-                false
+                emptyList()
             }
-            pebbleConnected = connected
+            pebbleConnected = watches.isNotEmpty()
+        }
+    }
+
+    /** Driven by the Home screen "Pair Pebble for background access" button. */
+    private fun requestPairing() {
+        val dispatched = CdmManager.requestPairing(this, pairingLauncher)
+        if (!dispatched) {
+            // The bonded Pebble wasn't found — usually because the user
+            // hasn't completed the Pebble Android app's pairing flow yet.
+            // The logcat warning from CdmManager carries the cause.
+            Log.w(TAG, "CDM pairing not dispatched (Pebble not bonded yet?)")
         }
     }
 
@@ -165,7 +194,9 @@ class MainActivity : ComponentActivity() {
             HomeScreen(
                 detection = current,
                 pebbleConnected = pebbleConnected,
+                paired = paired,
                 runActive = runActive,
+                onPairTapped = ::requestPairing,
                 onStartTapped = ::onStartTapped,
                 onStopTapped = ::onStopTapped,
             )
