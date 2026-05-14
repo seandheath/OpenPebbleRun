@@ -6,12 +6,12 @@
         Required by CompanionDeviceManager.associate() per Android's
         feature gate. Without it, associate() throws IllegalStateException
         even when the REQUEST_COMPANION_* permissions are declared.
-        required="false" because the device may not have CDM support
-        below API 26, where we silently no-op the pairing flow.
+        required="true" — the watchapp companion has no useful function
+        without CDM-backed BAL exemption for watch-initiated stop.
     -->
     <uses-feature
         android:name="android.software.companion_device_setup"
-        android:required="false" />
+        android:required="true" />
 
     <!--
         Permissions (spec §9).
