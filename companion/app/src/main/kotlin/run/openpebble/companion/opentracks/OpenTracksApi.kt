@@ -61,7 +61,20 @@ object OpenTracksApi {
             putExtra(EXTRA_STATS_TARGET_CLASS, DashboardActivity::class.java.name)
             // FLAG_ACTIVITY_NEW_TASK is required when starting from a
             // non-Activity context (PebbleListenerService).
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            //
+            // FLAG_ACTIVITY_MULTIPLE_TASK forces a brand-new task on every
+            // dispatch instead of reusing one whose taskAffinity matches
+            // OpenTracks's. Without it, a second dispatch while OpenTracks's
+            // task is alive returns START_DELIVERED_TO_TOP (result code 3
+            // in ATMS logs): Android routes the Intent to the existing
+            // (finished-but-not-cleared) `publicapi.StartRecording` instance
+            // via onNewIntent, which AbstractAPIActivity does not override
+            // — so the Intent is silently dropped, no startNewTrack call,
+            // no Dashboard callback, no RUN_STARTED, watch times out to
+            // "Retry". With MULTIPLE_TASK, each dispatch gets a fresh task
+            // and a fresh onCreate. The empty task is cleaned up when
+            // AbstractAPIActivity calls finish() after execute() runs.
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         }
         return try {
             context.startActivity(intent)
@@ -77,7 +90,10 @@ object OpenTracksApi {
     fun stopRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_STOP).apply {
             component = ComponentName(variantPackage, CLASS_STOP)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // FLAG_ACTIVITY_MULTIPLE_TASK for the same reason as
+            // [startRecording] — avoids deliver-to-top semantics if a stale
+            // publicapi.StopRecording instance lingers in OpenTracks's task.
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         }
         return try {
             context.startActivity(intent)

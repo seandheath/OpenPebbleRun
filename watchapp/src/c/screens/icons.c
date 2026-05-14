@@ -55,3 +55,25 @@ void icons_draw_x(GContext *ctx, GRect r) {
     graphics_draw_line(ctx, tl, br);
     graphics_draw_line(ctx, tr, bl);
 }
+
+void icons_draw_play(GContext *ctx, GRect r) {
+    // Solid right-pointing isoceles triangle: top-left + bottom-left of `r`
+    // form the vertical edge, apex is at the midpoint of the right edge.
+    // Filled with GColorBlack via gpath_draw_filled — the simplest primitive
+    // that handles a triangular fill cleanly across emery's color display.
+    // Allocate + destroy per call because the rect can vary between callers
+    // (cheap — 3 points, no caching needed for a static icon redrawn once
+    // per layer_mark_dirty()).
+    GPoint points[3] = {
+        { (int16_t)(r.origin.x),                  (int16_t)(r.origin.y) },
+        { (int16_t)(r.origin.x),                  (int16_t)(r.origin.y + r.size.h - 1) },
+        { (int16_t)(r.origin.x + r.size.w - 1),   (int16_t)(r.origin.y + r.size.h / 2) },
+    };
+    GPathInfo info = { .num_points = 3, .points = points };
+    GPath *path = gpath_create(&info);
+    if (!path) return;
+    graphics_context_set_antialiased(ctx, true);
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    gpath_draw_filled(ctx, path);
+    gpath_destroy(path);
+}

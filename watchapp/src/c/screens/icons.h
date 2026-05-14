@@ -29,3 +29,6 @@
 void icons_draw_stop_square(GContext *ctx, GRect r);
 void icons_draw_check(GContext *ctx, GRect r);
 void icons_draw_x(GContext *ctx, GRect r);
+// Solid right-pointing triangle (▶). Drawn by idle.c next to the Select
+// button gutter as the "press to start" affordance.
+void icons_draw_play(GContext *ctx, GRect r);

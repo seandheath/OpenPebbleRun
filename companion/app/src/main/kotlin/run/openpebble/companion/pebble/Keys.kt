@@ -13,6 +13,7 @@ object Keys {
     // Wire keys are UInt on the Kotlin side (PebbleDictionary = Map<UInt, …>).
 
     // Watch → Companion
+    const val CMD_START:    UInt = 1u
     const val CMD_STOP:     UInt = 2u
 
     // Companion → Watch

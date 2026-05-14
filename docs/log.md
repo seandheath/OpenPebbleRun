@@ -401,6 +401,52 @@ The same key also resolves the previously-open companion-initiated stop TODO —
 - *Keep the dead path for hypothetical future watch-initiated start* — premature; if that comes back it'll need fresh BAL/FGS handling anyway.
 - *Hide the constants behind a feature flag* — no feature-flag mechanism exists in v0.1; over-engineering.
 
+## 2026-05-14 — Re-implement watch-initiated start (CDM bonded-device fast path makes it tractable)
+
+**Decision:** Restore watch-initiated start, swept on the same date in the "Sweep dead CMD_START / RUN_FAILED protocol" entry above. Re-add `KEY_CMD_START = 1` to the protocol (no `RUN_FAILED` — failure is signaled via the watch's starting-screen timeout, no extra wire surface). Idle screen's Select button now sends `CMD_START`; new `screens/starting.{c,h}` mirrors the existing `stopping.{c,h}` with a 15 s timeout (longer than stopping's 10 s — first GPS fix in OpenTracks can push the end-to-end ack past 10 s on a cold cache). Companion's `PebbleListenerService.onMessageReceived` gains a `handleStart` arm: resolves the OpenTracks variant package, requires an active CDM association (NACK with `Log.w` if not — there is no FGS BAL window to fall back on the way the stop path has), dispatches `OpenTracksApi.startRecording`. `RUN_STARTED` is still sent only from `DashboardActivity.onCreate` once OpenTracks has called us back, so the watch sees a single canonical "start completed" message regardless of who initiated.
+
+**Rationale:** The three failures documented on 2026-05-13 ("v0.1: start runs from the companion app" entry) were variants of the same Android security gate: a backgrounded service can't dispatch `startActivity` without a BAL exemption. The CDM-association path was tried then and failed for filter-shape reasons that the 2026-05-14 bonded-device fast-path entry resolved: a classic `BluetoothDeviceFilter` with `setAddress(bondedMac)` + `setSingleDevice(true)` (and no `setDeviceProfile`) triggers AOSP's `CompanionDeviceDiscoveryService` no-scan fast path, surfacing the bonded-but-non-advertising Pebble in the dialog within a frame. With an association in place, `REQUEST_COMPANION_RUN_IN_BACKGROUND` + `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` cover the BAL condition #11 exemption ("app responds to an action the user performed on a paired companion device"). Watch-initiated stop already exercises this path successfully — start is the same dispatch surface with `StartRecording` swapped in for `StopRecording`.
+
+**Implementation notes:**
+- `watchapp/src/c/app_message.h`: re-adds `KEY_CMD_START = 1`. Header comment table documents the implicit-ack-via-timeout model (no `RUN_FAILED`).
+- `watchapp/src/c/screens/icons.{c,h}`: new `icons_draw_play` — solid right-pointing triangle via `gpath_create` + `gpath_draw_filled`, allocated per call (cheap; called only on layer redraw). Drawn at 20×20 at the right-edge gutter, vertically aligned with the Select button — same column the stop-confirm screen uses for ✓/✕.
+- `watchapp/src/c/screens/idle.{c,h}`: Select now wired to `select_click_handler` (send `KEY_CMD_START` + `vibes_short_pulse()` + `starting_show()`). Prompt text "Start a run on your phone" → "Press Select to start" (still `GOTHIC_24`, still wraps to two lines). New play-icon `Layer` painted via `play_icon_update_proc`. `idle.h` exposes two new helpers: `idle_arm_inbox()` (used by starting.c's Back-from-error path to put idle back in charge of inbox dispatches before popping) and `idle_get_window()` (parallels `active_run_get_window()` for future stack surgery; currently consumed by starting.c through the active-run handoff).
+- `watchapp/src/c/screens/starting.{c,h}`: near-verbatim from `stopping.{c,h}`. 15 s vs. 10 s timeout. `STARTING / STARTING_ERROR` states. Success path pushes active-run + removes self (idle stays under). Back-from-error path arms idle's handler then pops to idle. Inbox handler clears in `window_unload` so trailing dispatches don't reach freed state.
+- `companion/.../Keys.kt`: adds `CMD_START: UInt = 1u`.
+- `companion/.../PebbleListenerService.kt`: new `handleStart`. Hard requires CDM association (vs. stop's soft warn-but-continue) because there is no FGS BAL window — we are explicitly *not yet* in FGS state at this point. `RUN_STARTED` is **not** sent from here; `DashboardActivity.onCreate` remains the canonical sender so the FGS-promotion + URI-stash + ack ordering stays a single linear path.
+- `docs/specification.md`: §4.2.1 idle rewritten with the new Select binding and play-icon affordance; new §4.2.1a Starting screen; §7.1 protocol table re-adds `CMD_START` with a sentence on the implicit-ack model; §7.2 `RUN_STARTED` description updated to cover both initiation paths; §8.2 "Run start fails" rewritten to match the new starting-screen UX, with a new §8.2a for companion-initiated failures.
+
+**Alternatives considered:**
+- *Add `RUN_FAILED` (or `RUN_START_FAILED`) as an explicit negative ack* — rejected. The watch's 15 s timeout + retry is consistent with the existing stop flow, and CDM-not-paired diagnostics already live in the companion's Home screen via the "Pair Pebble for background access" button. One ack key per direction is enough.
+- *Send `RUN_STARTED` from `handleStart` directly on intent-dispatch success* — rejected. The dispatch returns immediately while OpenTracks's recording-start, our URI grant, and the FGS promotion all take real time. An early ack would race the URI stash, and the watch's active-run screen would appear before the metric pipe was ready.
+- *Use Up instead of Select for the start affordance, mirroring stop-confirm's Up=confirm* — rejected on user feedback; Select reads as "main action" and matches Pebble platform convention. The play icon at the Select gutter makes the binding unambiguous.
+- *Drop the starting screen, rely on idle's existing RUN_STARTED handler to transition directly* — rejected. No feedback on a dispatch that fails silently (e.g. CDM not paired) — the user would press Select and stare at idle forever. Starting+timeout is the same engineering pattern as stopping+timeout for the same reason.
+
+## 2026-05-14 — `FLAG_ACTIVITY_MULTIPLE_TASK` on `publicapi.StartRecording` / `StopRecording`
+
+**Decision:** `OpenTracksApi.startRecording` and `stopRecording` now dispatch their Intents with `FLAG_ACTIVITY_NEW_TASK or FLAG_ACTIVITY_MULTIPLE_TASK` instead of `FLAG_ACTIVITY_NEW_TASK` alone.
+
+**Rationale:** Watch-initiated start worked the first time after every cold OpenTracks launch but failed silently on the second start (or any start with OpenTracks's task already in recents — including the common "stop a run, immediately start another" case). adb logcat traced it to ATMS:
+
+```
+START u0 {act=...publicapi.StartRecording flg=0x10000000 ...
+   cmp=...playstore/...publicapi.StartRecording (has extras)} with
+   LAUNCH_MULTIPLE from uid 10456 (run.openpebble.companion.debug)
+   (BAL_ALLOW_ALLOWLISTED_COMPONENT) result code=3
+```
+
+`result code=3` is `ActivityManager.START_DELIVERED_TO_TOP`. With `FLAG_ACTIVITY_NEW_TASK` alone plus a matching `taskAffinity`, Android routes the second dispatch into OpenTracks's existing task and delivers the Intent to the still-listed (finished-but-not-purged) `publicapi.StartRecording` instance at the task root via `onNewIntent`. OpenTracks's `AbstractAPIActivity` only does its work in `onCreate` (binds `TrackRecordingService`, calls `execute`, fires the Dashboard callback) and has no `onNewIntent` override, so the second Intent is silently dropped: no `startNewTrack`, no `IntentDashboardUtils.startDashboard`, no `DashboardActivity.onCreate`, no `RUN_STARTED`. The watch's `starting` screen times out to "Retry" and the user sees OpenTracks foregrounded but no run recording.
+
+`FLAG_ACTIVITY_MULTIPLE_TASK` (in combination with `FLAG_ACTIVITY_NEW_TASK`) forces Android to always create a brand-new task instead of reusing one with matching affinity. Each dispatch gets a fresh `onCreate` invocation; the empty task is cleaned up when `AbstractAPIActivity` calls `finish()` after `execute()`. `DashboardActivity`'s existing `OpenTracksApi.openApp` call still foregrounds OpenTracks's main UI after the run actually starts, so end-state UX is unchanged.
+
+Applied symmetrically to `stopRecording` because the same class of bug would surface on a watch-initiated stop following an externally-started OpenTracks run (the `publicapi.StopRecording` instance from the previous stop can linger the same way). Not currently reachable in the watch-driven flow but cheap to harden.
+
+**Alternatives considered:**
+- *`FLAG_ACTIVITY_CLEAR_TASK`* — also forces a fresh `onCreate`, but tears down OpenTracks's existing UI task before the launch. Worse UX: the user's OpenTracks track-list / settings state would be wiped on every start.
+- *`FLAG_ACTIVITY_NEW_DOCUMENT`* — the API-21+ document-task model. Conceptually similar to `MULTIPLE_TASK` but adds per-Intent document-identity semantics that aren't relevant for fire-and-forget publicapi calls. `MULTIPLE_TASK` is the smaller, more direct fix.
+- *Detect "already recording" in `handleStart` and short-circuit by sending `RUN_STARTED` directly (no `StartRecording` dispatch)* — viable when `RunSession.active` is true, but only covers the case where our companion knows about the active run. The root-cause bug is in Intent dispatch routing, and fixing it at the dispatch level also helps any future code path that needs to fire publicapi Intents reliably.
+- *Override the listener service's `taskAffinity` to mismatch OpenTracks's* — would dodge the affinity-match reuse, but our service is not the source of the affinity match (it's `publicapi.StartRecording`'s declared affinity that controls task assignment). No effect.
+
 ## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
 
 **Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.

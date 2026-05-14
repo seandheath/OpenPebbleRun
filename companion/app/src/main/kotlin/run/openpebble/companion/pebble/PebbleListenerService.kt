@@ -39,10 +39,14 @@ import java.util.UUID
  * recents (the Activity itself may be stopped).
  *
  * Watch → Companion keys handled here:
- *   2  CMD_STOP → fire OpenTracksApi.stopRecording
+ *   1  CMD_START → fire OpenTracksApi.startRecording
+ *   2  CMD_STOP  → fire OpenTracksApi.stopRecording
  *
  * `RUN_STARTED` is sent from `DashboardActivity.onCreate` (when OpenTracks
- * calls us back with the Track URIs), not from here.
+ * calls us back with the Track URIs), not from here — including for the
+ * watch-initiated start path. The watch's `starting` screen waits up to
+ * 15 s for that delivery; logical race-free because OpenTracks's
+ * Dashboard callback path takes sub-second once StartRecording dispatches.
  *
  * Per the library docs, **received numbers always arrive as UInt32 or
  * Int32 regardless of the wire size the watch used**.
@@ -319,7 +323,8 @@ class PebbleListenerService : BasePebbleListenerService() {
         }
 
         return when {
-            data.containsKey(Keys.CMD_STOP) -> handleStop()
+            data.containsKey(Keys.CMD_START) -> handleStart()
+            data.containsKey(Keys.CMD_STOP)  -> handleStop()
             else -> {
                 Log.d(TAG, "Unknown keys in inbox: ${data.keys}")
                 ReceiveResult.Nack
@@ -333,6 +338,42 @@ class PebbleListenerService : BasePebbleListenerService() {
      */
     private fun resolveVariant(): String? =
         OpenTracksVariant.cached(this) ?: OpenTracksVariant.detect(this).pkg
+
+    /**
+     * Watch-initiated start. Mirrors [handleStop]: dispatch the OpenTracks
+     * publicapi Intent from this (non-foreground) service and let the
+     * normal Dashboard-callback path send `RUN_STARTED` back to the watch.
+     *
+     * BAL: we are explicitly **not** in a foreground-service state at this
+     * point — no run is active yet, so the FGS BAL window doesn't cover
+     * us. The only path that lets `startActivity` through on Android 14+
+     * is the CDM-association exemption (BAL docs condition #11). If the
+     * user hasn't completed the CDM pairing flow yet, NACK loudly so the
+     * watch surfaces its timeout-then-retry error and the user is nudged
+     * to open the companion's Home screen and tap "Pair Pebble for
+     * background access".
+     *
+     * We do **not** send `RUN_STARTED` from here. `DashboardActivity.onCreate`
+     * is the canonical sender — it fires once OpenTracks has called us
+     * back with the Track URIs, which is also the moment we promote the
+     * service to foreground. Sending here would race the URI stash and
+     * the watch's active-run screen would come up before the metric pipe
+     * was actually ready.
+     */
+    private fun handleStart(): ReceiveResult {
+        val pkg = resolveVariant() ?: run {
+            Log.w(TAG, "CMD_START but no OpenTracks variant installed — NACK")
+            return ReceiveResult.Nack
+        }
+        if (!CdmManager.isPaired(this)) {
+            Log.w(TAG, "CMD_START but no CDM association — start would BAL_BLOCK; " +
+                       "open companion and tap 'Pair Pebble for background access'")
+            return ReceiveResult.Nack
+        }
+        Log.d(TAG, "CMD_START → startRecording($pkg)")
+        val dispatched = OpenTracksApi.startRecording(this, pkg)
+        return if (dispatched) ReceiveResult.Ack else ReceiveResult.Nack
+    }
 
     private fun handleStop(): ReceiveResult {
         val pkg = resolveVariant() ?: return ReceiveResult.Nack
