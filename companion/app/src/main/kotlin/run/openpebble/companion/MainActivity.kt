@@ -56,16 +56,6 @@ class MainActivity : ComponentActivity() {
     private var paired by mutableStateOf(false)
 
     /**
-     * Pebble BT MAC, pulled from PebbleKit's [WatchIdentifier] on each
-     * `refreshPebbleConnection`. Used by [CdmManager.requestPairing] to
-     * pre-populate the CDM dialog with a classic-BT
-     * [BluetoothDeviceFilter.setAddress] filter — that, combined with
-     * `setSingleDevice(true)`, triggers AOSP's bonded-device fast path
-     * so the dialog can find the watch without a BLE-advertising scan.
-     */
-    private var pebbleMac: String? = null
-
-    /**
      * Cached info retriever. PebbleKitAndroid2 binds lazily on first call.
      * Note: per the library README, [PebbleInfoRetriever] works only when the
      * app is in the foreground — fine for Home, which is foreground-only.
@@ -171,31 +161,17 @@ class MainActivity : ComponentActivity() {
                 emptyList()
             }
             pebbleConnected = watches.isNotEmpty()
-            // PebbleKit's WatchIdentifier toString embeds the raw BT MAC
-            // (12 hex chars, no colons). CDM's BluetoothDeviceFilter wants
-            // the colon-separated form ("84:54:0A:D4:82:2B") — convert.
-            pebbleMac = watches.firstOrNull()?.toString()?.let { extractMac(it) }
         }
-    }
-
-    /**
-     * Extract a colon-separated MAC from PebbleKit's
-     * `WatchIdentifier(value=84540AD4822B)` toString.
-     */
-    private fun extractMac(watchToStr: String): String? {
-        val rawMatch = Regex("[0-9A-Fa-f]{12}").find(watchToStr) ?: return null
-        return rawMatch.value.uppercase().chunked(2).joinToString(":")
     }
 
     /** Driven by the Home screen "Pair Pebble for background access" button. */
     private fun requestPairing() {
-        val dispatched = CdmManager.requestPairing(this, pebbleMac, pairingLauncher)
+        val dispatched = CdmManager.requestPairing(this, pairingLauncher)
         if (!dispatched) {
-            // Most likely the Pebble app hasn't reported a connected watch
-            // yet. The Home screen surfaces "Pebble ✗" in that state so
-            // the user already has visible feedback; the logcat warning
-            // from CdmManager explains the cause.
-            Log.w(TAG, "CDM pairing not dispatched (Pebble MAC unknown?)")
+            // The bonded Pebble wasn't found — usually because the user
+            // hasn't completed the Pebble Android app's pairing flow yet.
+            // The logcat warning from CdmManager carries the cause.
+            Log.w(TAG, "CDM pairing not dispatched (Pebble not bonded yet?)")
         }
     }
 

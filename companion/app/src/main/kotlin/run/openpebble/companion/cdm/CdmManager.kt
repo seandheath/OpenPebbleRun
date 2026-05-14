@@ -1,15 +1,20 @@
 package run.openpebble.companion.cdm
 
+import android.Manifest
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.companion.AssociationRequest
 import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Context
 import android.content.IntentSender
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.IntentSenderRequest
+import androidx.core.content.ContextCompat
 import java.util.concurrent.Executor
 
 /**
@@ -25,19 +30,21 @@ import java.util.concurrent.Executor
  * Filter shape — load-bearing. AOSP's
  * `CompanionDeviceDiscoveryService.checkBoundDevicesIfNeeded()` (see
  * `packages/CompanionDeviceManager/src/com/android/companiondevicemanager/
- * CompanionDeviceDiscoveryService.java`) only consults
- * `BluetoothAdapter.getBondedDevices()` — i.e. takes the "no scan
- * required" fast path that surfaces the watch even when it isn't BLE-
- * advertising — when **all** of: (a) at least one classic
- * [BluetoothDeviceFilter] is present, (b) the filter has
- * `setAddress(...)` set, (c) `setSingleDevice(true)`. The Pebble bonded
- * record (`Pebble 822B  DUAL  cod:0-1f-0`) shows up in that list, so
- * with the fast path active the system dialog displays the watch
- * immediately. Earlier attempts that omitted any of (a)/(b)/(c)
- * — `BluetoothLeDeviceFilter`, missing address, `setSingleDevice(false)`,
- * or `setDeviceProfile(DEVICE_PROFILE_WATCH)` (which overrides the path
- * and forces a scan) — all silently fell back to scanning, which the
- * GAP-silent bonded Pebble can never satisfy.
+ * CompanionDeviceDiscoveryService.java`) takes the "no scan required"
+ * fast path that surfaces the watch even when it isn't BLE-advertising
+ * only when **all** of: (a) at least one classic [BluetoothDeviceFilter]
+ * is present, (b) the filter has `setAddress(...)` set, (c)
+ * `setSingleDevice(true)`. The address it matches against is whatever
+ * `BluetoothDevice.getAddress()` returns for entries in
+ * `BluetoothAdapter.getBondedDevices()` — i.e. the **BR/EDR public
+ * address** (e.g. `84:54:0A:D4:82:2B`), not the LE random static
+ * address. PebbleKit's `WatchIdentifier` exposes only the LE address
+ * (`C1:13:14:11:00:BD`-style, top two bits = random-static), so passing
+ * that through to CDM silently misses the bonded match and the dialog
+ * falls back to scanning. We instead enumerate
+ * `BluetoothAdapter.getBondedDevices()` directly, find the Pebble by
+ * `name.startsWith("Pebble")`, and use that record's `address` — the
+ * exact string AOSP will compare against.
  */
 object CdmManager {
 
@@ -61,6 +68,45 @@ object CdmManager {
     }
 
     /**
+     * Look up the bonded Pebble's BR/EDR address via the platform
+     * Bluetooth adapter. Returns the first bonded device whose name
+     * starts with "Pebble" (case-insensitive), or null if none — meaning
+     * the user hasn't completed the Pebble Android app's pairing flow
+     * yet. Requires `BLUETOOTH_CONNECT` on API 31+; the permission is
+     * requested at app launch (`MainActivity.maybeRequestRuntimePermissions`).
+     */
+    fun findBondedPebbleAddress(context: Context): String? {
+        if (Build.VERSION.SDK_INT >= 31 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "findBondedPebbleAddress: BLUETOOTH_CONNECT not granted")
+            return null
+        }
+        val bm = context.getSystemService(BluetoothManager::class.java) ?: return null
+        val adapter = bm.adapter ?: return null
+        val bonded: Set<BluetoothDevice> = try {
+            adapter.bondedDevices ?: emptySet()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "bondedDevices threw SecurityException", e)
+            return null
+        }
+        val pebble = bonded.firstOrNull { device ->
+            // BluetoothDevice.getName() requires BLUETOOTH_CONNECT on API
+            // 31+; we just gated on that. Wrap in try in case a specific
+            // device's name read still throws on a quirky OEM build.
+            val name = try { device.name } catch (_: SecurityException) { null }
+            name?.startsWith("Pebble", ignoreCase = true) == true
+        }
+        if (pebble == null) {
+            val names = bonded.joinToString(", ") {
+                runCatching { it.name }.getOrNull() ?: it.address
+            }
+            Log.d(TAG, "findBondedPebbleAddress: no Pebble in bonded set [$names]")
+        }
+        return pebble?.address
+    }
+
+    /**
      * Dispatch a CDM associate request. The system shows the bonded-device
      * fast-path dialog (no scan), the user taps Allow, and Android
      * activates `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
@@ -69,29 +115,22 @@ object CdmManager {
      *
      * Returns true if a request was dispatched, false if the prerequisites
      * weren't met (caller can surface a hint to the user).
-     *
-     * @param pebbleMac the Pebble's BT MAC (e.g. "84:54:0A:D4:82:2B")
-     *   from PebbleKit's [io.rebble.pebblekit2.common.model.WatchIdentifier].
-     *   Required: the AOSP fast path keys off this address. Null means
-     *   the Pebble Android app hasn't reported a connected watch yet —
-     *   user should open the Pebble app and confirm the watch is
-     *   connected, then retry.
      */
     fun requestPairing(
         activity: ComponentActivity,
-        pebbleMac: String?,
         launcher: ActivityResultLauncher<IntentSenderRequest>,
     ): Boolean {
         if (Build.VERSION.SDK_INT < 26) {
             Log.w(TAG, "CDM not available below API 26; pairing not attempted")
             return false
         }
-        if (pebbleMac.isNullOrBlank()) {
-            // Without the MAC the bonded fast path won't trigger and the
-            // dialog falls back to active scanning, which is GAP-silent
-            // for a bonded Pebble — the dialog hangs on "Looking for a
-            // watch…". Refuse rather than offer a guaranteed-failing UX.
-            Log.w(TAG, "requestPairing: Pebble MAC unknown — connect the Pebble Android app first")
+        val bondedAddress = findBondedPebbleAddress(activity)
+        if (bondedAddress.isNullOrBlank()) {
+            // Without the bonded address the fast path can't trigger and
+            // the dialog falls back to active scanning, which is
+            // GAP-silent for a bonded Pebble. Refuse rather than offer a
+            // guaranteed-failing UX.
+            Log.w(TAG, "requestPairing: Pebble not in bondedDevices — pair the watch in the Pebble app first")
             return false
         }
         val cdm = activity.getSystemService(Context.COMPANION_DEVICE_SERVICE)
@@ -100,12 +139,16 @@ object CdmManager {
                 return false
             }
 
-        // Classic-BT filter pinned to the bonded Pebble's MAC. The system
-        // dialog short-circuits to BluetoothAdapter.getBondedDevices() and
-        // surfaces the watch instantly — no BLE advertising required.
-        Log.d(TAG, "requestPairing: building filter address='$pebbleMac' singleDevice=true")
+        // Classic-BT filter pinned to the bonded Pebble's BR/EDR address.
+        // AOSP's CompanionDeviceDiscoveryService.findMatch evaluates
+        // BluetoothDeviceFilter.matches() against
+        // BluetoothAdapter.getBondedDevices(); the comparison is
+        // String.equals on the address, so we MUST pass the same string
+        // that getBondedDevices() reports — which is the BR/EDR public
+        // address, never the LE random static.
+        Log.d(TAG, "requestPairing: building filter address='$bondedAddress' singleDevice=true")
         val filter = BluetoothDeviceFilter.Builder()
-            .setAddress(pebbleMac)
+            .setAddress(bondedAddress)
             .build()
         // setSingleDevice(true) is the *other* half of the fast-path
         // trigger. setDeviceProfile(...) is deliberately NOT used —
