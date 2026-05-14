@@ -148,6 +148,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
             needed += Manifest.permission.BLUETOOTH_CONNECT
         }
+        if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_SCAN)) {
+            needed += Manifest.permission.BLUETOOTH_SCAN
+        }
         if (Build.VERSION.SDK_INT >= 33 && !isGranted(Manifest.permission.POST_NOTIFICATIONS)) {
             needed += Manifest.permission.POST_NOTIFICATIONS
         }
@@ -205,7 +208,7 @@ class MainActivity : ComponentActivity() {
      * ship in release builds. Auto-stops after 10 s.
      */
     private fun runBleProbe() {
-        if (!BuildConfig.DEBUG) return
+        Log.d("BleProbe", "runBleProbe entry")
         if (Build.VERSION.SDK_INT >= 31 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
                 != PackageManager.PERMISSION_GRANTED) {
