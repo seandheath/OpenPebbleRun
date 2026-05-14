@@ -422,6 +422,31 @@ The same key also resolves the previously-open companion-initiated stop TODO —
 - *Use Up instead of Select for the start affordance, mirroring stop-confirm's Up=confirm* — rejected on user feedback; Select reads as "main action" and matches Pebble platform convention. The play icon at the Select gutter makes the binding unambiguous.
 - *Drop the starting screen, rely on idle's existing RUN_STARTED handler to transition directly* — rejected. No feedback on a dispatch that fails silently (e.g. CDM not paired) — the user would press Select and stare at idle forever. Starting+timeout is the same engineering pattern as stopping+timeout for the same reason.
 
+## 2026-05-14 — `FLAG_ACTIVITY_MULTIPLE_TASK` on `publicapi.StartRecording` / `StopRecording`
+
+**Decision:** `OpenTracksApi.startRecording` and `stopRecording` now dispatch their Intents with `FLAG_ACTIVITY_NEW_TASK or FLAG_ACTIVITY_MULTIPLE_TASK` instead of `FLAG_ACTIVITY_NEW_TASK` alone.
+
+**Rationale:** Watch-initiated start worked the first time after every cold OpenTracks launch but failed silently on the second start (or any start with OpenTracks's task already in recents — including the common "stop a run, immediately start another" case). adb logcat traced it to ATMS:
+
+```
+START u0 {act=...publicapi.StartRecording flg=0x10000000 ...
+   cmp=...playstore/...publicapi.StartRecording (has extras)} with
+   LAUNCH_MULTIPLE from uid 10456 (run.openpebble.companion.debug)
+   (BAL_ALLOW_ALLOWLISTED_COMPONENT) result code=3
+```
+
+`result code=3` is `ActivityManager.START_DELIVERED_TO_TOP`. With `FLAG_ACTIVITY_NEW_TASK` alone plus a matching `taskAffinity`, Android routes the second dispatch into OpenTracks's existing task and delivers the Intent to the still-listed (finished-but-not-purged) `publicapi.StartRecording` instance at the task root via `onNewIntent`. OpenTracks's `AbstractAPIActivity` only does its work in `onCreate` (binds `TrackRecordingService`, calls `execute`, fires the Dashboard callback) and has no `onNewIntent` override, so the second Intent is silently dropped: no `startNewTrack`, no `IntentDashboardUtils.startDashboard`, no `DashboardActivity.onCreate`, no `RUN_STARTED`. The watch's `starting` screen times out to "Retry" and the user sees OpenTracks foregrounded but no run recording.
+
+`FLAG_ACTIVITY_MULTIPLE_TASK` (in combination with `FLAG_ACTIVITY_NEW_TASK`) forces Android to always create a brand-new task instead of reusing one with matching affinity. Each dispatch gets a fresh `onCreate` invocation; the empty task is cleaned up when `AbstractAPIActivity` calls `finish()` after `execute()`. `DashboardActivity`'s existing `OpenTracksApi.openApp` call still foregrounds OpenTracks's main UI after the run actually starts, so end-state UX is unchanged.
+
+Applied symmetrically to `stopRecording` because the same class of bug would surface on a watch-initiated stop following an externally-started OpenTracks run (the `publicapi.StopRecording` instance from the previous stop can linger the same way). Not currently reachable in the watch-driven flow but cheap to harden.
+
+**Alternatives considered:**
+- *`FLAG_ACTIVITY_CLEAR_TASK`* — also forces a fresh `onCreate`, but tears down OpenTracks's existing UI task before the launch. Worse UX: the user's OpenTracks track-list / settings state would be wiped on every start.
+- *`FLAG_ACTIVITY_NEW_DOCUMENT`* — the API-21+ document-task model. Conceptually similar to `MULTIPLE_TASK` but adds per-Intent document-identity semantics that aren't relevant for fire-and-forget publicapi calls. `MULTIPLE_TASK` is the smaller, more direct fix.
+- *Detect "already recording" in `handleStart` and short-circuit by sending `RUN_STARTED` directly (no `StartRecording` dispatch)* — viable when `RunSession.active` is true, but only covers the case where our companion knows about the active run. The root-cause bug is in Intent dispatch routing, and fixing it at the dispatch level also helps any future code path that needs to fire publicapi Intents reliably.
+- *Override the listener service's `taskAffinity` to mismatch OpenTracks's* — would dodge the affinity-match reuse, but our service is not the source of the affinity match (it's `publicapi.StartRecording`'s declared affinity that controls task assignment). No effect.
+
 ## 2026-05-13 — Start Run foregrounds OpenTracks; defer track name to its setting
 
 **Decision:** When the user taps Start Run on the companion, the companion now (in addition to launching the watchapp and dispatching `publicapi.StartRecording`) calls `OpenTracksApi.openApp` to bring OpenTracks's main activity to the foreground. The `TRACK_NAME` extra is removed from the StartRecording intent; OpenTracks's own "Default track name" preference (Date ISO 8601 / Date local / Number) applies instead. `TRACK_CATEGORY` and `TRACK_ICON` ("running") are preserved.
