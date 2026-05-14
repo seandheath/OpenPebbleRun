@@ -22,7 +22,16 @@
         QUERY_ALL_PACKAGES.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!--
+        usesPermissionFlags="neverForLocation" asserts that we don't
+        derive physical location from BLE scan results. Without it,
+        API 31+ silently returns zero scan results unless
+        ACCESS_FINE_LOCATION is granted — which we deliberately don't
+        request (spec §9 "no location permission").
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
 
     <!--
         Foreground-service support for run state (spec §5.1). PebbleListenerService
