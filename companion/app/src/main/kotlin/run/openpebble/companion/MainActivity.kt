@@ -73,9 +73,11 @@ class MainActivity : ComponentActivity() {
      *    `startForeground(... FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)`
      *    throws `SecurityException` and crashes the process the moment
      *    DashboardActivity tries to promote PebbleListenerService.
-     *  - **POST_NOTIFICATIONS** (API 33+): for the visible recording
-     *    notification. If denied the service still gets foreground state;
-     *    the notification simply isn't shown.
+     *
+     * POST_NOTIFICATIONS is deliberately not requested. See the manifest
+     * comment near the FOREGROUND_SERVICE block — Android's FGS contract
+     * needs a Notification object, not a permission to *display* it, and
+     * OpenTracks already shows its own recording notification.
      */
     private val runtimePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -132,9 +134,6 @@ class MainActivity : ComponentActivity() {
         val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
             needed += Manifest.permission.BLUETOOTH_CONNECT
-        }
-        if (Build.VERSION.SDK_INT >= 33 && !isGranted(Manifest.permission.POST_NOTIFICATIONS)) {
-            needed += Manifest.permission.POST_NOTIFICATIONS
         }
         if (needed.isNotEmpty()) {
             runtimePermissionLauncher.launch(needed.toTypedArray())
