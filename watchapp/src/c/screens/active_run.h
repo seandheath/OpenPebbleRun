@@ -19,8 +19,10 @@
  *   123 DISTANCE      uint32 hundredths of a mile
  *
  * HR is read from the watch's internal HRM (HealthMetricHeartRateBPM) and
- * averaged for the run-summary screen. CADENCE renders "---" — derived
- * cadence from the watch's step counter is unimplemented.
+ * averaged for the run-summary screen. CADENCE is derived locally on the
+ * watch from HealthMetricStepCount (spec §4.3): 5 s polling, 15 s
+ * rolling window, rendered as steps-per-minute. Not surfaced in the
+ * run-summary (spec §4.2.5 lists DIST / TIME / AVG PACE / AVG HR only).
  *
  * Buttons (spec §4.2.2):
  *   Back     → exit watchapp; run keeps recording in the companion. The

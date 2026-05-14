@@ -422,6 +422,25 @@ The same key also resolves the previously-open companion-initiated stop TODO —
 - *Use Up instead of Select for the start affordance, mirroring stop-confirm's Up=confirm* — rejected on user feedback; Select reads as "main action" and matches Pebble platform convention. The play icon at the Select gutter makes the binding unambiguous.
 - *Drop the starting screen, rely on idle's existing RUN_STARTED handler to transition directly* — rejected. No feedback on a dispatch that fails silently (e.g. CDM not paired) — the user would press Select and stare at idle forever. Starting+timeout is the same engineering pattern as stopping+timeout for the same reason.
 
+## 2026-05-14 — Cadence derivation on the watch (3-slot ring, 5 s polling, 15 s window)
+
+**Decision:** Implement spec §4.3 cadence on the active-run screen via a 3-slot ring buffer of `HealthMetricStepCount` samples polled every 5 s, with `SPM = (steps_now − steps_15s_ago) × 4`. Seeded at `window_load` so the first valid SPM lands at t≈15 s; renders `---` while the ring fills, `0` when standing still, `N` SPM (no upper clamp) otherwise. Cadence is purely watch-local — not surfaced in `RunStats`, not pushed via AppMessage.
+
+**Rationale:** Closes the last unimplemented field on active-run, and the lone outstanding watchapp feature in spec §14. The algorithm is what spec §4.3 already pins; the implementation choices are about ring sizing and warm-up timing.
+
+Ring size = 3 (not 4). With N slots spaced 5 s apart, the oldest slot in circular order is exactly `(N − 1) × 5 s` older than the most recent write — i.e. 10 s older for N=3, 15 s older for N=4. We want a 15 s span between **the slot we read** and **the slot we're writing**, which is `5 × (writes-since-the-read-target)`. Since we read the slot we're about to overwrite, that distance is `5 × (N − 1)` writes apart in time. For a 15 s window, N − 1 = 3 ⇒ N = 4 (writes apart) — but writes happen at the END of each tick, so the read targets data that's been sitting one tick longer than the gap-between-writes suggests. Working it out: 3 slots, seed at t=0 ⇒ first SPM at t=15 s reads ring[0] = sample(0), writes ring[0] = sample(15). 4 slots gives a 20 s window. Trace fully verified before committing.
+
+Seed-at-load (rather than waiting for the first 5 s tick) saves 5 s of `---` placeholder at the top of every run. Without the seed, first SPM lands at t=20 s. The seed costs one extra `peek_current_value` call in `window_load` — negligible.
+
+Midnight rollover defense: `delta < 0` clamped to 0. `HealthMetricStepCount` is a daily-cumulative counter; a run straddling midnight observes a transient negative delta. Clamping produces a single zero-SPM tick before the ring repopulates with the post-midnight baseline. No upper clamp — extreme readings (200+ SPM during interval workouts) are real and a cap would mask sensor issues.
+
+**Alternatives considered:**
+- *Rolling sum across all samples in the window* — would need per-second polling and step-delta accumulation. More CPU + battery for no accuracy gain over the simple endpoints-only delta, which is what the spec specifies.
+- *Faster polling (e.g. 1 s)* — would give a snappier-looking CADENCE field but is wasted granularity given that step counts at 1 Hz are quantized and the visual update is already keyed to the 5 s metric beat shared with HR and the companion pipe.
+- *Skip the seed, accept a 20 s warm-up* — rejected because the spec explicitly says "15 s rolling window" and aligning the first valid SPM to that exact moment matches user expectation. The seed is one extra line of code.
+- *Push cadence over AppMessage so the companion can log/persist it* — explicitly rejected by spec §4.3 ("Display locally. Not sent to companion."). HR and cadence both live entirely on the watch; only pace/distance/time are companion-derived.
+- *Average cadence in `RunStats` for the run-summary screen* — rejected on spec §4.2.5 grounds, which lists DIST / TIME / AVG PACE / AVG HR only. The summary screen contract is unchanged.
+
 ## 2026-05-14 — `FLAG_ACTIVITY_MULTIPLE_TASK` on `publicapi.StartRecording` / `StopRecording`
 
 **Decision:** `OpenTracksApi.startRecording` and `stopRecording` now dispatch their Intents with `FLAG_ACTIVITY_NEW_TASK or FLAG_ACTIVITY_MULTIPLE_TASK` instead of `FLAG_ACTIVITY_NEW_TASK` alone.

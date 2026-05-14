@@ -39,6 +39,22 @@
 // Periodic tick to check staleness; cheap to run, ~1 Hz.
 #define STALE_TICK_MS       1000
 
+// Cadence polling cadence per spec §4.3: read HealthMetricStepCount every
+// 5 s, window 15 s. Ring size = 15 s / 5 s = 3 slots — with 3 slots
+// spaced 5 s apart, the oldest slot (next-write slot, in circular order)
+// is exactly 15 s older than the most recent write. SPM =
+// (delta_steps / 15) × 60 = delta_steps × 4.
+#define CADENCE_TICK_MS       5000
+#define CADENCE_RING_SIZE     3
+// Floor on per-window step delta. Pebble's HealthMetricStepCount is a
+// monotonically-increasing daily counter that resets at local midnight; a
+// run that straddles midnight would observe a negative delta and we clamp
+// it to 0 (visible as a single zero-SPM tick before the post-midnight
+// samples populate the ring with a fresh baseline). No upper clamp —
+// extreme readings are usually real (interval workouts can briefly hit
+// 200+ SPM) and capping them would hide sensor problems.
+#define CADENCE_MIN_DELTA     0
+
 static Window    *s_window = NULL;
 
 // Layers: label (small caps) + value (large numeric) per cell.
@@ -64,9 +80,7 @@ static char s_hr_buf[12];     // "###" or "---" (worst case "4294967295")
 static char s_pace_buf[12];   // "M:SS" — gcc reasons through the <3600 cap
 static char s_dist_buf[16];   // "X.XX" worst case "4294967295.99"
 static char s_time_buf[16];   // "MM:SS" / "H:MM:SS" worst case 3×10-digit
-// Cadence has no snprintf'd buffer — its value layer renders the literal
-// "---" placeholder. Derived cadence from HealthMetricStepCount is not yet
-// implemented.
+static char s_cad_buf[12];    // "###" SPM or "---" during ring fill
 
 // Staleness tracking. last_inbox_ms is updated by inbox_handler; the timer
 // callback compares against `app_now_ms()` (we use a monotonic counter via
@@ -92,6 +106,18 @@ static uint32_t s_dist_hundredths_mi = 0;
 // are skipped so they don't drag the average down.
 static uint64_t s_hr_sum   = 0;
 static uint32_t s_hr_count = 0;
+
+// Cadence ring: 4 step-count samples spaced 5 s apart. `s_step_idx` is the
+// next slot to write; the slot at that index holds the OLDEST sample (the
+// one we're about to overwrite), which is exactly the 15 s-ago reading
+// we want for the delta. `s_step_filled` saturates at CADENCE_RING_SIZE
+// once we've collected enough samples for a valid window — until then we
+// render "---" instead of a misleadingly small SPM derived from a partial
+// window.
+static int32_t  s_step_ring[CADENCE_RING_SIZE];
+static uint8_t  s_step_idx     = 0;
+static uint8_t  s_step_filled  = 0;
+static AppTimer *s_cad_timer   = NULL;
 
 // ===== Heart-rate sampling =====
 //
@@ -194,6 +220,62 @@ static void stale_tick_cb(void *ctx) {
     text_layer_set_text(s_time_value, s_time_buf);
 
     schedule_stale_tick();
+}
+
+// ===== Cadence sampling =====
+//
+// Spec §4.3: poll HealthMetricStepCount every 5 s, derive SPM over a 15 s
+// rolling window, render locally. The companion is intentionally not in
+// the loop here — cadence updates need a tighter latency than the
+// ContentObserver-driven metric pipe, and step-count delivery doesn't
+// benefit from going phone-side at all.
+//
+// Ring construction: slot at s_step_idx is the next write target, which
+// (once the ring has been around at least once) holds the sample from
+// 15 s ago. So we read-then-write at that slot: pull the 15 s-ago
+// reading, push today's current count, advance. No separate "tail"
+// pointer.
+
+static void cadence_tick_cb(void *ctx);
+
+static void schedule_cadence_tick(void) {
+    s_cad_timer = app_timer_register(CADENCE_TICK_MS, cadence_tick_cb, NULL);
+}
+
+static void render_cadence(int32_t spm) {
+    if (spm < 0) {
+        snprintf(s_cad_buf, sizeof(s_cad_buf), "---");
+    } else {
+        snprintf(s_cad_buf, sizeof(s_cad_buf), "%ld", (long)spm);
+    }
+    text_layer_set_text(s_cad_value, s_cad_buf);
+}
+
+static void cadence_tick_cb(void *ctx) {
+    s_cad_timer = NULL;
+
+    // peek_current_value returns the cumulative daily step count. Safe to
+    // call even if the user hasn't taken any steps today (it returns 0)
+    // and even immediately after a midnight rollover (it returns the
+    // post-rollover count, which is small — handled by the clamp below).
+    int32_t steps_now = (int32_t)health_service_peek_current_value(
+        HealthMetricStepCount);
+
+    int32_t spm = -1;  // sentinel → render "---"
+    if (s_step_filled >= CADENCE_RING_SIZE) {
+        int32_t steps_15s_ago = s_step_ring[s_step_idx];
+        int32_t delta = steps_now - steps_15s_ago;
+        if (delta < CADENCE_MIN_DELTA) delta = CADENCE_MIN_DELTA;
+        spm = delta * 4;  // delta / 15 s × 60 s/min
+    }
+
+    s_step_ring[s_step_idx] = steps_now;
+    s_step_idx = (s_step_idx + 1) % CADENCE_RING_SIZE;
+    if (s_step_filled < CADENCE_RING_SIZE) s_step_filled++;
+
+    render_cadence(spm);
+
+    schedule_cadence_tick();
 }
 
 // ===== AppMessage inbox handler =====
@@ -379,7 +461,24 @@ static void window_load(Window *window) {
     s_dist_hundredths_mi = 0;
     s_hr_sum = 0;
     s_hr_count = 0;
+
+    // Cadence ring reset + seed. Seeding at t=0 makes the first valid
+    // SPM appear at t≈15 s (after 3 ticks bring s_step_filled to 3),
+    // not t≈20 s. We bump s_step_idx past the seed slot so the first
+    // tick writes to slot 1 and the seed survives long enough to feed
+    // the t=15 s delta computation as ring[s_step_idx=0].
+    s_step_ring[0] = (int32_t)health_service_peek_current_value(
+        HealthMetricStepCount);
+    s_step_idx = 1;
+    s_step_filled = 1;
+    // Render the initial "---" eagerly so the layer text matches our
+    // state (the value layer's window_load initializer also sets "---",
+    // but a duplicate call here keeps the load-then-reshow path coherent
+    // if active_run_show is ever called on an already-cached window).
+    render_cadence(-1);
+
     schedule_stale_tick();
+    schedule_cadence_tick();
 
     // Enable internal HRM at 0.2 Hz (one sample every 5 s) and subscribe to
     // updates. The 5 s period matches the companion's OpenTracks poll cadence,
@@ -399,6 +498,7 @@ static void window_unload(Window *window) {
     health_service_set_heart_rate_sample_period(0);
 
     if (s_stale_timer) { app_timer_cancel(s_stale_timer); s_stale_timer = NULL; }
+    if (s_cad_timer)   { app_timer_cancel(s_cad_timer);   s_cad_timer   = NULL; }
 
     text_layer_destroy(s_hr_label);   text_layer_destroy(s_hr_value);
     text_layer_destroy(s_pace_label); text_layer_destroy(s_pace_value);
