@@ -97,6 +97,10 @@ class MainActivity : ComponentActivity() {
         for ((perm, granted) in grants) {
             Log.d(TAG, "$perm granted=$granted")
         }
+        if (grants[Manifest.permission.BLUETOOTH_SCAN] == true) {
+            // BLUETOOTH_SCAN was the gate; now that it's granted, retry the probe.
+            runBleProbe()
+        }
     }
 
     /**
