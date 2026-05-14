@@ -1,9 +1,14 @@
 package run.openpebble.companion
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -113,6 +118,7 @@ class MainActivity : ComponentActivity() {
         runActive = RunSession.active
         paired = CdmManager.isPaired(this)
         maybeRequestRuntimePermissions()
+        runBleProbe()
 
         setContent {
             MaterialTheme {
@@ -189,6 +195,50 @@ class MainActivity : ComponentActivity() {
     /** Driven by the Home screen "Pair Pebble for background access" button. */
     private fun requestPairing() {
         CdmManager.requestPairing(this, pebbleMac, pairingLauncher)
+    }
+
+    /**
+     * Diagnostic-only: run a brief unfiltered BLE scan and log every
+     * advertisement seen. Purpose: settle "does the Pebble actually
+     * broadcast while bonded to the Pebble app?" — visible in
+     * `adb logcat | grep BleProbe`. Gated by Build.DEBUG so it doesn't
+     * ship in release builds. Auto-stops after 10 s.
+     */
+    private fun runBleProbe() {
+        if (!BuildConfig.DEBUG) return
+        if (Build.VERSION.SDK_INT >= 31 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+                != PackageManager.PERMISSION_GRANTED) {
+            Log.d("BleProbe", "skip — BLUETOOTH_SCAN not granted")
+            return
+        }
+        val bm = getSystemService(BluetoothManager::class.java) ?: return
+        val scanner = bm.adapter?.bluetoothLeScanner ?: run {
+            Log.d("BleProbe", "skip — no LE scanner")
+            return
+        }
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                Log.d("BleProbe", "addr=${result.device.address} name=${result.device.name ?: result.scanRecord?.deviceName} rssi=${result.rssi}")
+            }
+            override fun onScanFailed(errorCode: Int) {
+                Log.w("BleProbe", "scan failed code=$errorCode")
+            }
+        }
+        try {
+            scanner.startScan(callback)
+            Log.d("BleProbe", "scan started — listening for 10 s")
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    scanner.stopScan(callback)
+                    Log.d("BleProbe", "scan stopped")
+                } catch (e: Exception) {
+                    Log.w("BleProbe", "stopScan threw", e)
+                }
+            }, 10_000)
+        } catch (e: Exception) {
+            Log.w("BleProbe", "startScan threw", e)
+        }
     }
 
     @Composable

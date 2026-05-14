@@ -45,6 +45,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     // Kotlin source dirs (we use src/main/kotlin instead of src/main/java).

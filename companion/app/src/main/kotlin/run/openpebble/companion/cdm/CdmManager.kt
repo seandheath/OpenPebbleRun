@@ -1,8 +1,7 @@
 package run.openpebble.companion.cdm
 
-import android.bluetooth.le.ScanFilter
 import android.companion.AssociationRequest
-import android.companion.BluetoothLeDeviceFilter
+import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Context
 import android.content.IntentSender
@@ -23,23 +22,17 @@ import java.util.concurrent.Executor
  * silently BAL_BLOCKed on Android 14+ once the FGS BAL window (~10 s)
  * lapses.
  *
- * Filter choice — important: the Pebble Time 2 registers as a **DUAL**
- * (BR/EDR + LE) Bluetooth device. Verified via `dumpsys bluetooth_manager`
- * on the user's test device:
+ * Filter choice — Phase 1 final attempt: the Pebble Time 2 is a **DUAL**
+ * (BR/EDR + LE) bonded device that doesn't advertise while the Pebble
+ * Android app holds its GATT connection. Every previous variant
+ * (classic+setAddress, LE+setDeviceAddress, with/without
+ * DEVICE_PROFILE_WATCH) saw the dialog scan return 0 matches.
  *
- *   xx:xx:xx:xx:82:2b DUAL cod:0-1f-0 ... name:"Pebble 822B"
- *
- * Gadgetbridge's `BondingUtil` chooses the filter type by the bonded
- * device's reported type — `DEVICE_TYPE_LE` and `DEVICE_TYPE_DUAL` both
- * go through `BluetoothLeDeviceFilter`, only `DEVICE_TYPE_CLASSIC` uses
- * the classic filter. We match that: the Pebble's LE half is what the
- * system's CDM scan can discover (the Pebble app holds the active LE
- * ACL connection), so we filter by MAC via [ScanFilter.setDeviceAddress].
- *
- * No `setDeviceProfile(DEVICE_PROFILE_WATCH)` here either — Gadgetbridge
- * doesn't use it for Pebble, and the watch profile bundles permissions
- * targeted at Wear OS devices that may change how the system performs
- * its discovery scan.
+ * This pass uses the most permissive classic-BT filter we can build:
+ * empty `BluetoothDeviceFilter` + `setSingleDevice(false)`. The dialog
+ * shows the system's full classic-BT picker. If Android includes the
+ * bonded Pebble in that picker, the user can tap it manually. If it
+ * doesn't, see plan Phase 2 (revert and document the limitation).
  */
 object CdmManager {
 
@@ -63,16 +56,19 @@ object CdmManager {
     }
 
     /**
-     * Dispatch a CDM associate request. The system shows a pairing dialog;
-     * on user acceptance, Android creates the association and activates
-     * `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
+     * Dispatch a CDM associate request. The system shows a pairing dialog
+     * listing all classic-BT devices it knows about (bonded + discovered);
+     * the user taps their Pebble. On acceptance, Android creates the
+     * association and activates `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
      * `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` for
      * our UID, which together grant the BAL exemption our service needs.
      *
-     * @param pebbleMac the Pebble's BT MAC (e.g. "C1:13:14:11:00:BD")
-     *   from PebbleKit's [WatchIdentifier]. Used as the [ScanFilter]
-     *   device address so the system dialog finds the bonded Pebble.
+     * `pebbleMac` is unused in Phase 1's permissive filter (we no longer
+     * pin the dialog to a specific address). Kept in the signature so
+     * MainActivity's call site doesn't churn if we re-introduce
+     * MAC-pinning later.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun requestPairing(
         activity: ComponentActivity,
         pebbleMac: String?,
@@ -87,25 +83,16 @@ object CdmManager {
                 Log.w(TAG, "CompanionDeviceManager unavailable on this device")
                 return
             }
-        if (pebbleMac == null) {
-            // Without a known MAC we can't build a useful scan filter; refuse
-            // to launch a "scanning…" dialog that'll never find anything.
-            Log.w(TAG, "No Pebble MAC known yet — connect the Pebble app first")
-            return
-        }
 
-        val scanFilter = ScanFilter.Builder()
-            .setDeviceAddress(pebbleMac)
-            .build()
-        val deviceFilter = BluetoothLeDeviceFilter.Builder()
-            .setScanFilter(scanFilter)
-            .build()
+        // Empty classic-BT filter: match all classic BT devices. The system
+        // dialog renders a picker over the user's bonded + discovered set.
+        val deviceFilter = BluetoothDeviceFilter.Builder().build()
         val request = AssociationRequest.Builder()
             .addDeviceFilter(deviceFilter)
-            .setSingleDevice(true)
+            .setSingleDevice(false)
             .build()
 
-        Log.d(TAG, "associate: requesting pairing with mac=$pebbleMac")
+        Log.d(TAG, "associate: requesting classic-BT picker (Phase 1 permissive filter)")
 
         if (Build.VERSION.SDK_INT >= 33) {
             // Modern callback path. Android delivers the dialog
