@@ -5,7 +5,7 @@
  * (active-run's inbox handler stays installed so metrics keep updating
  * underneath in case the user cancels).
  *
- * Buttons (see docs/log.md 2026-05-13 icons entry):
+ * Buttons:
  *   Up         → send CMD_STOP, vibrate, transition to run-summary (and
  *                silently remove active-run + self from the window stack so
  *                dismissing the summary exits the watchapp).

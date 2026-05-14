@@ -2,10 +2,9 @@
  * Active-run screen. Spec §4.2.2.
  *
  * Pushed by the idle screen (§4.2.1) when its inbox handler receives
- * RUN_STARTED. The watchapp does *not* launch directly into this screen —
- * a run-stats display with "---" placeholders looks broken when nothing is
- * actually being recorded, so idle stays on screen until the companion
- * confirms a run is active.
+ * RUN_STARTED. The watchapp does not launch directly into this screen —
+ * idle stays up until the companion confirms a run is active so the user
+ * never sees "---" placeholders on what looks like a run.
  *
  * 200×228 emery layout, three rows:
  *   HEART RATE       (large)   ### bpm
@@ -18,21 +17,21 @@
  *   120 PACE_CURRENT  uint16 sec/mi
  *   122 TIME          uint32 seconds
  *   123 DISTANCE      uint32 hundredths of a mile
- *   124 HR_EXTERNAL   uint16 bpm (only when companion forwards strap HR; step 8)
  *
- * HR + cadence display "---" placeholders here — step 7 reads them from the
- * watch's own HRM and step counter. Step 8 routes incoming HR_EXTERNAL to the
- * HR row, replacing the local HRM source.
+ * HR is read from the watch's internal HRM (HealthMetricHeartRateBPM) and
+ * averaged for the run-summary screen. CADENCE renders "---" — derived
+ * cadence from the watch's step counter is unimplemented.
  *
- * Buttons (spec §4.2.2, revised — see docs/log.md 2026-05-13 icons entry):
+ * Buttons (spec §4.2.2):
  *   Back     → exit watchapp; run keeps recording in the companion. The
  *              user can reopen and the companion replays RUN_STARTED.
- *   Down     → open stop-confirm (spec §4.2.3). Square icon hint at
+ *   Down     → open stop-confirm (spec §4.2.3). Square icon hint at the
  *              right edge marks this affordance.
  *   Select / Up → no-op.
  *
- * Stale handling (spec §4.2.2 + §8.1): if no inbox message arrives within 30 s,
- * dim text colors to GColorLightGray. Restore full color on next inbox.
+ * Stale handling (spec §4.2.2 + §8.1): if no inbox message arrives within
+ * 30 s, dim text colors to GColorLightGray. Restore full color on next
+ * inbox.
  */
 
 #pragma once

@@ -15,7 +15,7 @@
  *   │                     ✕  │   X icon next to physical Down button
  *   └────────────────────────┘
  *
- * Button binding (spec §4.2.3, revised — see docs/log.md 2026-05-13 icons):
+ * Button binding (spec §4.2.3):
  *   Up     → confirm: send CMD_STOP, vibrate, transition to run-summary.
  *   Down   → cancel: pop back to active-run. Combined with active-run's
  *            Down=open-stop-confirm, this gives the user-visible invariant

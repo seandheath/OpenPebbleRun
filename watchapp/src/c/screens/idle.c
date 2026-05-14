@@ -5,16 +5,13 @@
 /*
  * Idle screen implementation. See idle.h for the screen contract.
  *
- * One-shot in this session: once active-run is pushed on top, we stay
- * underneath but never receive inbox messages again (active-run installs its
- * own handler, then run-summary or active-run's Back exits the app via
- * window_stack_pop_all). The user never returns to idle within a single
- * watchapp session.
+ * Once active-run is pushed on top, this screen stays underneath but no
+ * longer receives inbox dispatches (active-run installs its own handler);
+ * exits go through active-run / run-summary, never back to this screen.
  *
- * The inbox handler is installed *synchronously* in idle_show — the
- * companion's RUN_STARTED can land before the event loop has a chance to
- * dispatch a window_appear callback (same race the deleted pre_run.c
- * documented; preserved here because the failure mode is identical).
+ * The inbox handler is installed synchronously in idle_show so RUN_STARTED
+ * messages that land before the event loop dispatches window_appear are
+ * not dropped.
  */
 
 static Window    *s_window = NULL;

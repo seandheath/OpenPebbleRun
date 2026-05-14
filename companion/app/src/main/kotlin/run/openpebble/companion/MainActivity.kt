@@ -33,14 +33,13 @@ import run.openpebble.companion.ui.FirstLaunchScreen
 import run.openpebble.companion.ui.HomeScreen
 
 /**
- * Single activity entry point. Spec §5.2: first-launch instructions iff Public
- * API check fails (degraded to "OpenTracks variant not installed" — see below);
- * steady-state Home screen otherwise.
+ * Single activity entry point. Spec §5.2: first-launch instructions when
+ * no OpenTracks variant is installed; steady-state Home screen otherwise.
  *
- * The "Public API check" at this stage is degraded to "OpenTracks variant is
- * installed". Actually probing whether the Public API toggle is enabled
- * requires firing StartRecording (intrusive — starts a real track), and spec
- * §11 explicitly accepts "Public API enablement is not auto-verified".
+ * The check is "OpenTracks variant is installed", not "Public API is
+ * enabled" — probing the toggle would require firing StartRecording and
+ * actually creating a track, which is too intrusive. Spec §11 documents
+ * the gap.
  */
 class MainActivity : ComponentActivity() {
 
@@ -174,21 +173,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Driven by the Home screen's Start Run button. Two-step here, plus a
-     * follow-up handoff in DashboardActivity:
-     *  1. Launch our watchapp on the Pebble via PebbleKit's `startAppOnTheWatch`
-     *     so the user doesn't have to open it manually. No-op if already open.
-     *  2. Fire StartRecording to OpenTracks from this Activity's foreground
-     *     context (no BAL issue). OpenTracks calls DashboardActivity back,
-     *     which (a) stashes the URIs in RunSession, (b) sends RUN_STARTED
-     *     to the watch, and (c) foregrounds OpenTracks's own UI via
-     *     OpenTracksApi.openApp. The watch's idle screen accepts
-     *     RUN_STARTED and transitions to active-run.
+     * Driven by the Home screen's Start Run button:
+     *  1. Open the watchapp on the Pebble via PebbleKit's
+     *     `startAppOnTheWatch` so the user doesn't have to open it manually.
+     *  2. Fire StartRecording to OpenTracks from this foreground context.
      *
-     * The foreground handoff is done from DashboardActivity, not here.
-     * Calling openApp from this method races OpenTracks's callback
-     * dispatch and lands DashboardActivity on top of OpenTracks instead
-     * of the other way around.
+     * OpenTracks then calls DashboardActivity back, which (a) stashes the
+     * URIs in RunSession, (b) sends RUN_STARTED to the watch, and (c)
+     * foregrounds OpenTracks's own UI via OpenTracksApi.openApp. The
+     * watch's idle screen accepts RUN_STARTED and transitions to
+     * active-run.
      */
     private fun onStartTapped() {
         val pkg = detection.pkg ?: return

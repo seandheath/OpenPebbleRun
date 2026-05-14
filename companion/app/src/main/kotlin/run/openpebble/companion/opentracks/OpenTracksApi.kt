@@ -10,29 +10,25 @@ import run.openpebble.companion.DashboardActivity
  * OpenTracks Public API client. Spec §6.1.
  *
  * Component-targets the variant-specific StartRecording / StopRecording
- * activities. Intent extras drive track naming and the Dashboard callback.
+ * activities. Intent extras drive track tagging and the Dashboard callback.
  *
  * Naming / categorization:
- *  - TRACK_NAME     — intentionally NOT set. OpenTracks has its own "Default
- *                     track name" ListPreference (Settings → Recording → Default
- *                     track name; options: Date ISO 8601 / Date local / Number)
- *                     which applies when the extra is absent. SharedPreferences
- *                     aren't readable from third-party apps, so deferring is the
- *                     only way to honor the user's choice. Spec §5.2.2.
- *  - TRACK_CATEGORY = "running"   (OpenTracks has no default-category pref)
+ *  - TRACK_NAME — intentionally not set. OpenTracks's own "Default track
+ *                 name" preference (Settings → Recording → Default track
+ *                 name; Date ISO 8601 / Date local / Number) applies when
+ *                 the extra is absent. SharedPreferences aren't readable
+ *                 from third-party apps, so deferring is the only way to
+ *                 honor the user's choice.
+ *  - TRACK_CATEGORY = "running"
  *  - TRACK_ICON     = "running"
  *
- * Dashboard callback (spec §6.1, §6.2):
- *  - STATS_TARGET_PACKAGE = our applicationId (varies between debug/release)
+ * Dashboard callback:
+ *  - STATS_TARGET_PACKAGE = our applicationId
  *  - STATS_TARGET_CLASS   = fully qualified name of [DashboardActivity]
  *
- * **BAL note (spec §5.1):** these `startActivity` calls would BAL-block on
- * API 31+ if the caller is a plain background service. PebbleListenerService
- * therefore promotes itself to a foreground service *before* calling
- * [startRecording] / [stopRecording] (and demotes after). That gives the
- * service foreground process state, which Android honors as a BAL-allowance.
- * Once the run is done the foreground state drops and BAL kicks back in;
- * we're never in this method without a live, foreground-elevated caller.
+ * Background Activity Launch: callers must be foreground-eligible at call
+ * time — an Activity (MainActivity / DashboardActivity) or a foreground
+ * service (PebbleListenerService while a run is active).
  */
 object OpenTracksApi {
 
@@ -41,16 +37,12 @@ object OpenTracksApi {
     private const val ACTION_START = "de.dennisguse.opentracks.publicapi.StartRecording"
     private const val ACTION_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
 
-    // OpenTracks's publicapi activities live at FIXED FQCNs regardless of the
-    // variant (`playstore`, `debug`, `nightly` are applicationId *suffixes*,
-    // not source-package changes). Spec §6.1 writes the Component as
-    // "<package>/de.dennisguse.opentracks.publicapi.StartRecording" — the
-    // path after the slash is the literal activity class path.
+    // OpenTracks's publicapi activities live at fixed FQCNs regardless of
+    // the variant (`playstore`, `debug`, `nightly` are applicationId
+    // suffixes, not source-package changes).
     private const val CLASS_START = "de.dennisguse.opentracks.publicapi.StartRecording"
     private const val CLASS_STOP  = "de.dennisguse.opentracks.publicapi.StopRecording"
 
-    // Extras (string keys mirror spec §6.1). TRACK_NAME is intentionally
-    // omitted from the dispatched Intent — see class header for rationale.
     private const val EXTRA_TRACK_CATEGORY       = "TRACK_CATEGORY"
     private const val EXTRA_TRACK_ICON           = "TRACK_ICON"
     private const val EXTRA_STATS_TARGET_PACKAGE = "STATS_TARGET_PACKAGE"
@@ -58,9 +50,7 @@ object OpenTracksApi {
 
     /**
      * Send a StartRecording Intent to the given OpenTracks variant package.
-     * Returns true if the intent was dispatched without exception; false on
-     * any thrown exception. Note: `context.startActivity` does NOT throw on
-     * silent BAL_BLOCK — see the class header for how we avoid that case.
+     * Returns true if the intent was dispatched without exception.
      */
     fun startRecording(context: Context, variantPackage: String): Boolean {
         val intent = Intent(ACTION_START).apply {
@@ -69,8 +59,8 @@ object OpenTracksApi {
             putExtra(EXTRA_TRACK_ICON, "running")
             putExtra(EXTRA_STATS_TARGET_PACKAGE, context.packageName)
             putExtra(EXTRA_STATS_TARGET_CLASS, DashboardActivity::class.java.name)
-            // FLAG_ACTIVITY_NEW_TASK is required when starting from a non-Activity
-            // context (PebbleListenerService). Cheap to set always.
+            // FLAG_ACTIVITY_NEW_TASK is required when starting from a
+            // non-Activity context (PebbleListenerService).
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
@@ -100,11 +90,8 @@ object OpenTracksApi {
     }
 
     /**
-     * Best-effort attempt to open the OpenTracks app — its settings screen if we
-     * can resolve a dedicated activity, otherwise the launcher. Spec §5.2.1.
-     *
-     * Returns true if any Intent dispatched. Called from MainActivity's UI
-     * thread, so BAL isn't relevant here.
+     * Open the OpenTracks app's main launcher activity. Returns true if the
+     * Intent dispatched.
      */
     fun openApp(context: Context, variantPackage: String): Boolean {
         val pm = context.packageManager

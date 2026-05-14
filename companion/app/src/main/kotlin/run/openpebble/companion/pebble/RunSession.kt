@@ -14,12 +14,11 @@ import android.net.Uri
  *
  * URI ownership: OpenTracks grants `FLAG_GRANT_READ_URI_PERMISSION` to our
  * process when it launches `DashboardActivity` with the dashboard URIs in
- * `intent.clipData`. The grant is per-UID and persists for the lifetime of the
- * Activity's task (i.e. until the user removes us from recents). We stash the
- * URIs here so PebbleListenerService can read them on its poll cadence even
- * when DashboardActivity itself is no longer foreground (phone screen off,
- * other app on top, etc.) — that's the whole point of v0.1's "phone in
- * pocket" architecture.
+ * `intent.clipData`. The grant is per-UID and persists for the lifetime of
+ * the Activity's task (i.e. until the user removes us from recents). We
+ * stash the URIs here so PebbleListenerService can read them on its poll
+ * cadence even when DashboardActivity itself is no longer foreground —
+ * that's the "phone in pocket" architecture.
  */
 object RunSession {
     /** True between DashboardActivity.onCreate and onDestroy. */

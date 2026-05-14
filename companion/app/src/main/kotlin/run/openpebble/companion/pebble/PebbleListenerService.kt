@@ -16,7 +16,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.rebble.pebblekit2.client.BasePebbleListenerService
 import io.rebble.pebblekit2.common.model.PebbleDictionary
-import io.rebble.pebblekit2.common.model.PebbleDictionaryItem
 import io.rebble.pebblekit2.common.model.ReceiveResult
 import io.rebble.pebblekit2.common.model.WatchIdentifier
 import kotlinx.coroutines.launch
@@ -28,30 +27,24 @@ import run.openpebble.companion.opentracks.OpenTracksVariant
 import java.util.UUID
 
 /**
- * Receives AppMessages from the watch via PebbleKitAndroid2's bound-service
- * mechanism, AND owns the OpenTracks Dashboard poll loop. Spec §3, §5.1, §7.1.
+ * Receives AppMessages from the watch (via PebbleKitAndroid2's bound-service
+ * mechanism) and owns the OpenTracks Dashboard poll loop.
  *
- * **Why polling lives here, not in `DashboardActivity`:** v0.1 requires that
- * the companion never need to be in the foreground — the user pockets the
- * phone and watches their wrist. An Activity-scoped poll dies on `onPause`
- * (screen lock, app switch). This service is bound by the Pebble Android app
- * the moment the watchapp opens and stays bound until it closes, so its
- * polling cadence is decoupled from screen / activity state. URI grants from
- * OpenTracks are per-UID; as long as the DashboardActivity's task is in
- * recents (the Activity itself may be stopped) the URIs remain usable.
+ * Polling lives here, not in `DashboardActivity`, so the user can pocket
+ * the phone and let the screen lock without dropping the metric stream.
+ * The service is bound by the Pebble Android app the moment the watchapp
+ * opens and stays bound until it closes; URI grants from OpenTracks are
+ * per-UID and remain usable as long as the DashboardActivity's task is in
+ * recents (the Activity itself may be stopped).
  *
  * Watch → Companion keys handled here:
  *   2  CMD_STOP → fire OpenTracksApi.stopRecording
  *
  * `RUN_STARTED` is sent from `DashboardActivity.onCreate` (when OpenTracks
- * invokes us back with the Track URIs), not from here. The matching
- * `CMD_START` half of the protocol was retired with pre-run — runs are now
- * initiated by MainActivity's Start Run button (spec §5.2.2). See
- * docs/log.md 2026-05-14 "Sweep dead CMD_START / RUN_FAILED protocol".
+ * calls us back with the Track URIs), not from here.
  *
- * Per the library docs, **received numbers always arrive as UInt32 or Int32
- * regardless of the wire size the watch used**, so we test for either to be
- * robust to future watch-side changes to the send size.
+ * Per the library docs, **received numbers always arrive as UInt32 or
+ * Int32 regardless of the wire size the watch used**.
  */
 class PebbleListenerService : BasePebbleListenerService() {
 
@@ -112,48 +105,37 @@ class PebbleListenerService : BasePebbleListenerService() {
         Log.d(TAG, "PebbleListenerService onDestroy — stopping poll loop")
         mainHandler.removeCallbacks(pollRunnable)
         unregisterObserversIfAny()
-        // Defensive demote in case we're torn down mid-run. stopForeground is a
-        // no-op if we were never in foreground state — safe to call unconditionally.
-        @Suppress("DEPRECATION")
-        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
-        else stopForeground(true)
+        // stopForeground is a no-op if we were never promoted — safe.
+        stopForeground(STOP_FOREGROUND_REMOVE)
         PebbleMessenger.close()
         super.onDestroy()
     }
 
     /**
      * Handle the [ACTION_PROMOTE_FOREGROUND] kick from DashboardActivity.
-     * Called when OpenTracks's dashboard callback lands in our process —
-     * DashboardActivity uses `startForegroundService`, so Android requires
-     * us to call `startForeground` within ~5 s. [promoteToForeground] does
-     * exactly that. Other Intent actions (currently none) flow through to
-     * the default Service behavior.
+     * DashboardActivity uses `startForegroundService`, so we must call
+     * `startForeground` within Android's ~5 s deadline — [promoteToForeground]
+     * does that. START_NOT_STICKY: the Pebble Android app re-binds us on
+     * the next watchapp open, which is the right re-entry trigger.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PROMOTE_FOREGROUND) {
             Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → promoteToForeground")
             promoteToForeground()
         }
-        // START_NOT_STICKY: if the process is killed, don't try to restart the
-        // service from the system. The Pebble Android app re-binds us on the
-        // next watchapp open, which is the right re-entry trigger.
         return START_NOT_STICKY
     }
 
     // === Foreground-service plumbing (spec §5.1) ===
     //
-    // Promoted to foreground while a run is active so the OS doesn't reap us
-    // mid-run and so the CMD_STOP → publicapi.StopRecording dispatch gets BAL
-    // allowance from a backgrounded process. Promotion is kicked from
-    // DashboardActivity.onCreate via startForegroundService(ACTION_PROMOTE_
-    // FOREGROUND) — see onStartCommand above. Demotion runs in handleStop
-    // when CMD_STOP arrives, with a defensive demote in onDestroy. The
-    // notification is "ongoing" with LOW importance (silent). Matches
-    // OpenTracks's own TrackRecordingService pattern.
+    // The service runs as a foreground service while a run is active so the
+    // OS doesn't reap it mid-run. DashboardActivity kicks promotion via
+    // startForegroundService(ACTION_PROMOTE_FOREGROUND); handleStop demotes
+    // on CMD_STOP; onDestroy demotes defensively. The notification is
+    // "ongoing" with LOW importance (silent).
 
-    /** Lazy create the recording channel. Safe to call on every promotion. */
+    /** Lazy-create the recording channel. Safe to call on every promotion. */
     private fun ensureRecordingChannel() {
-        if (Build.VERSION.SDK_INT < 26) return
         val nm = getSystemService(NotificationManager::class.java) ?: return
         if (nm.getNotificationChannel(CHANNEL_ID_RECORDING) != null) return
         val channel = NotificationChannel(
@@ -207,9 +189,7 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     private fun demoteFromForeground() {
-        @Suppress("DEPRECATION")
-        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
-        else stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         Log.d(TAG, "demoted from foreground")
     }
 
@@ -347,13 +327,8 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     /**
-     * Resolve the OpenTracks variant package. Tries the SharedPreferences cache
-     * first (populated by MainActivity), then falls back to a live PackageManager
-     * probe. The fallback exists for defence in depth: in the canonical v0.1
-     * flow MainActivity has been opened before any run starts, so the cache is
-     * always warm by the time we hit `handleStop`. The probe is cheap (four
-     * `getPackageInfo` lookups) and refreshes the cache as a side-effect, so
-     * an evicted cache doesn't break the stop path.
+     * Resolve the OpenTracks variant package, preferring the cache populated
+     * by MainActivity and falling back to a live PackageManager probe.
      */
     private fun resolveVariant(): String? =
         OpenTracksVariant.cached(this) ?: OpenTracksVariant.detect(this).pkg
@@ -361,15 +336,13 @@ class PebbleListenerService : BasePebbleListenerService() {
     private fun handleStop(): ReceiveResult {
         val pkg = resolveVariant() ?: return ReceiveResult.Nack
         Log.d(TAG, "CMD_STOP → stopRecording($pkg)")
-        // BAL applies to startActivity from a backgrounded service; the
-        // service's foreground state from the active run satisfies it. After
-        // the dispatch, drop back to a plain bound service.
+        // The service's foreground state from the active run grants BAL for
+        // the startActivity. Demote afterwards.
         OpenTracksApi.stopRecording(this, pkg)
         demoteFromForeground()
-        // Clear RunSession so onAppOpened doesn't falsely replay RUN_STARTED on
-        // the next watchapp open. DashboardActivity.onDestroy also clears
-        // these but only fires when the Android task is torn down — typically
-        // long after the run has actually stopped.
+        // Clear RunSession so onAppOpened doesn't replay RUN_STARTED on the
+        // next watchapp open. DashboardActivity.onDestroy also clears these
+        // but only when the Android task is torn down.
         RunSession.clear()
         return ReceiveResult.Ack
     }
@@ -378,11 +351,8 @@ class PebbleListenerService : BasePebbleListenerService() {
         if (watchappUUID == PebbleMessenger.WATCHAPP_UUID) {
             RunSession.watchAppOpen = true
             Log.d(TAG, "watchapp opened on $watch")
-            // If a run is already in progress (user tapped Start on the
-            // companion before opening the watchapp), nudge the watch into
-            // active-run with a fresh RUN_STARTED. pre_run's inbox handler
-            // honors RUN_STARTED in IDLE state as well as STARTING for this
-            // exact handoff.
+            // If a run is already in progress, nudge the watch's idle screen
+            // into active-run with a fresh RUN_STARTED.
             if (RunSession.active) {
                 coroutineScope.launch {
                     PebbleMessenger.sendRunStarted(this@PebbleListenerService)
@@ -403,10 +373,9 @@ class PebbleListenerService : BasePebbleListenerService() {
 
         /**
          * Intent action sent by DashboardActivity (via startForegroundService)
-         * to request the service promote itself to a foreground service for
-         * the duration of the run. Spec §5.1: "Foreground promotion is
-         * initiated by DashboardActivity." Demotion happens in `handleStop`
-         * when CMD_STOP arrives from the watch, and defensively in onDestroy.
+         * to promote this service to a foreground service for the duration
+         * of the run. Demotion happens in `handleStop` on CMD_STOP and
+         * defensively in onDestroy.
          */
         const val ACTION_PROMOTE_FOREGROUND =
             "run.openpebble.companion.action.PROMOTE_FOREGROUND"
@@ -426,10 +395,8 @@ class PebbleListenerService : BasePebbleListenerService() {
         // most providers, so upper-case names threw IllegalArgumentException →
         // silently caught → null reads → all-zero metrics on the watch.
         //
-        // sensor_heartrate / sensor_cadence are intentionally absent: v4.27's
-        // dashboard URI projects only the basic GPS columns. Strap HR via
-        // OpenTracks (spec §4.3 step 8) needs a different mechanism — see
-        // docs/log.md TODO.
+        // sensor_heartrate / sensor_cadence are intentionally absent — the
+        // dashboard URI projects only the basic GPS columns.
         private const val COL_MOVING_TIME    = "movingtime"
         private const val COL_TOTAL_DISTANCE = "totaldistance"
         private const val COL_SPEED          = "speed"
@@ -455,14 +422,3 @@ private fun Cursor.floatOrNull(name: String): Float? = try {
 } catch (_: IllegalArgumentException) {
     null
 }
-
-/** Convenience: unify reads for the int-key types the library promotes to. */
-@Suppress("unused")
-private val PebbleDictionaryItem.asUInt: UInt?
-    get() = when (this) {
-        is PebbleDictionaryItem.UInt32 -> value
-        is PebbleDictionaryItem.UInt16 -> value.toUInt()
-        is PebbleDictionaryItem.UInt8  -> value.toUInt()
-        is PebbleDictionaryItem.Int32  -> value.toUInt()
-        else -> null
-    }

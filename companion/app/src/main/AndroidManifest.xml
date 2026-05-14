@@ -4,12 +4,11 @@
 
     <!--
         Permissions (spec §9).
-        BLUETOOTH_CONNECT is for PebbleKitAndroid2 (Android 12+). Not used yet at
-        skeleton stage, but declared so the runtime-prompt flow can be exercised
-        as soon as PebbleKit wiring lands in step 5.
 
-        Deliberately NOT requested: location, storage, notifications, foreground
-        service, internet. No QUERY_ALL_PACKAGES.
+        BLUETOOTH_CONNECT is required by PebbleKitAndroid2 on Android 12+.
+
+        Deliberately NOT requested: location, storage, internet, and
+        QUERY_ALL_PACKAGES.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
