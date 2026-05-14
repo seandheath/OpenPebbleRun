@@ -69,9 +69,9 @@ static void window_load(Window *window) {
     text_layer_set_text(s_title, "OpenPebbleRun");
     layer_add_child(root, text_layer_get_layer(s_title));
 
-    // Prompt wraps to two lines naturally at this width.
-    s_prompt = text_layer_create(GRect(8, 120, bounds.size.w - 16, bounds.size.h - 120));
-    text_layer_set_font(s_prompt, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+    // Prompt wraps to two lines at GOTHIC_24 at 184 px wide.
+    s_prompt = text_layer_create(GRect(8, 110, bounds.size.w - 16, bounds.size.h - 110));
+    text_layer_set_font(s_prompt, fonts_get_system_font(FONT_KEY_GOTHIC_24));
     text_layer_set_text_alignment(s_prompt, GTextAlignmentCenter);
     text_layer_set_background_color(s_prompt, GColorClear);
     text_layer_set_text_color(s_prompt, GColorBlack);

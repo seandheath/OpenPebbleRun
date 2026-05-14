@@ -101,7 +101,7 @@ static void format_hr(uint16_t avg_hr, char *out, size_t n) {
 
 static TextLayer *make_label(GRect frame, const char *text) {
     TextLayer *t = text_layer_create(frame);
-    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_18));
     text_layer_set_text_alignment(t, GTextAlignmentLeft);
     text_layer_set_background_color(t, GColorClear);
     text_layer_set_text_color(t, GColorBlack);
@@ -111,7 +111,7 @@ static TextLayer *make_label(GRect frame, const char *text) {
 
 static TextLayer *make_value(GRect frame, const char *initial) {
     TextLayer *t = text_layer_create(frame);
-    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
     text_layer_set_text_alignment(t, GTextAlignmentRight);
     text_layer_set_background_color(t, GColorClear);
     text_layer_set_text_color(t, GColorBlack);
@@ -119,22 +119,21 @@ static TextLayer *make_value(GRect frame, const char *initial) {
     return t;
 }
 
-// Row height tuned to fit four data rows plus a title in 228 px while keeping
-// a comfortable gap from the screen edges. Title at y=8, then four rows
-// starting at y=46 with 38 px stride.
-#define ROW_STRIDE 38
-#define ROW_Y_BASE 46
+// Row heights tuned to fit a GOTHIC_28_BOLD title plus four rows at
+// GOTHIC_28_BOLD (value) + GOTHIC_18 (label) within 228 px.
+#define ROW_STRIDE 44
+#define ROW_Y_BASE 50
 #define LABEL_X     8
-#define LABEL_W   120
-#define VALUE_X   100
-#define VALUE_W    92
+#define LABEL_W   108
+#define VALUE_X   102
+#define VALUE_W    90
 
 static void window_load(Window *window) {
     Layer *root = window_get_root_layer(window);
     window_set_background_color(window, GColorWhite);
 
-    s_title = text_layer_create(GRect(0, 8, SCREEN_W, 28));
-    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+    s_title = text_layer_create(GRect(0, 8, SCREEN_W, 36));
+    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
     text_layer_set_text_alignment(s_title, GTextAlignmentCenter);
     text_layer_set_background_color(s_title, GColorClear);
     text_layer_set_text_color(s_title, GColorBlack);
@@ -154,29 +153,29 @@ static void window_load(Window *window) {
 
     // Row 0: DISTANCE
     int y = ROW_Y_BASE;
-    s_dist_label = make_label(GRect(LABEL_X, y, LABEL_W, 22), "DISTANCE");
-    s_dist_value = make_value(GRect(VALUE_X, y, VALUE_W, 24), s_dist_buf);
+    s_dist_label = make_label(GRect(LABEL_X, y + 6, LABEL_W, 24), "DISTANCE");
+    s_dist_value = make_value(GRect(VALUE_X, y, VALUE_W, 36), s_dist_buf);
     layer_add_child(root, text_layer_get_layer(s_dist_label));
     layer_add_child(root, text_layer_get_layer(s_dist_value));
 
     // Row 1: TIME
     y += ROW_STRIDE;
-    s_time_label = make_label(GRect(LABEL_X, y, LABEL_W, 22), "TIME");
-    s_time_value = make_value(GRect(VALUE_X, y, VALUE_W, 24), s_time_buf);
+    s_time_label = make_label(GRect(LABEL_X, y + 6, LABEL_W, 24), "TIME");
+    s_time_value = make_value(GRect(VALUE_X, y, VALUE_W, 36), s_time_buf);
     layer_add_child(root, text_layer_get_layer(s_time_label));
     layer_add_child(root, text_layer_get_layer(s_time_value));
 
     // Row 2: AVG PACE
     y += ROW_STRIDE;
-    s_pace_label = make_label(GRect(LABEL_X, y, LABEL_W, 22), "AVG PACE");
-    s_pace_value = make_value(GRect(VALUE_X, y, VALUE_W, 24), s_pace_buf);
+    s_pace_label = make_label(GRect(LABEL_X, y + 6, LABEL_W, 24), "AVG PACE");
+    s_pace_value = make_value(GRect(VALUE_X, y, VALUE_W, 36), s_pace_buf);
     layer_add_child(root, text_layer_get_layer(s_pace_label));
     layer_add_child(root, text_layer_get_layer(s_pace_value));
 
     // Row 3: AVG HR
     y += ROW_STRIDE;
-    s_hr_label = make_label(GRect(LABEL_X, y, LABEL_W, 22), "AVG HR");
-    s_hr_value = make_value(GRect(VALUE_X, y, VALUE_W, 24), s_hr_buf);
+    s_hr_label = make_label(GRect(LABEL_X, y + 6, LABEL_W, 24), "AVG HR");
+    s_hr_value = make_value(GRect(VALUE_X, y, VALUE_W, 36), s_hr_buf);
     layer_add_child(root, text_layer_get_layer(s_hr_label));
     layer_add_child(root, text_layer_get_layer(s_hr_value));
 }
