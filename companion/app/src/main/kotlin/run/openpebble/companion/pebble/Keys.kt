@@ -17,6 +17,7 @@ object Keys {
 
     // Companion → Watch
     const val RUN_STARTED:  UInt = 110u
+    const val RUN_STOPPED:  UInt = 111u
     const val PACE_CURRENT: UInt = 120u  // uint16, sec/mi capped 3600
     const val TIME:         UInt = 122u  // uint32, seconds
     const val DISTANCE:     UInt = 123u  // uint32, hundredths of a mile

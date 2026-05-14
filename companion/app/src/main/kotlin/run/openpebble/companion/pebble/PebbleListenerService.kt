@@ -344,6 +344,13 @@ class PebbleListenerService : BasePebbleListenerService() {
         // next watchapp open. DashboardActivity.onDestroy also clears these
         // but only when the Android task is torn down.
         RunSession.clear()
+        // Acknowledge the stop to the watch. The stopping screen blocks on
+        // this; without the ack the watch surfaces a timeout error. Sent
+        // unconditionally — stopRecording's intent dispatch succeeding is
+        // the best signal we have, OpenTracks's actual stop is async.
+        coroutineScope.launch {
+            PebbleMessenger.sendRunStopped(this@PebbleListenerService)
+        }
         return ReceiveResult.Ack
     }
 

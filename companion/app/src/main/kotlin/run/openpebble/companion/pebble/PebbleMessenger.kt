@@ -62,6 +62,16 @@ object PebbleMessenger {
     }
 
     /**
+     * Tell the watch a run has stopped. Acks watch-initiated CMD_STOP (the
+     * stopping screen waits for this) and also drives the watch out of
+     * active-run when the user stops the run from the companion's Home
+     * screen instead of the watch.
+     */
+    suspend fun sendRunStopped(context: Context) {
+        send(context, mapOf(Keys.RUN_STOPPED to PebbleDictionaryItem.UInt8(1)))
+    }
+
+    /**
      * Launch our watchapp on the connected Pebble (PebbleKit
      * `startAppOnTheWatch`). Used by the Start Run button so the user
      * doesn't have to open the watchapp manually. No-op if already open.

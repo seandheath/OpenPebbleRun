@@ -1,5 +1,6 @@
 #include "active_run.h"
 #include "stop_confirm.h"
+#include "run_summary.h"
 #include "icons.h"
 #include "../app_message.h"
 
@@ -198,6 +199,18 @@ static void stale_tick_cb(void *ctx) {
 // ===== AppMessage inbox handler =====
 
 static void inbox_handler(DictionaryIterator *iter) {
+    // KEY_RUN_STOPPED arrives when the user stopped the run from the
+    // companion (Home → Stop Run). Push run-summary on top and remove
+    // ourselves; Back from the summary then exits the watchapp cleanly.
+    // For watch-initiated stops the stopping screen catches RUN_STOPPED
+    // first (it's the topmost window when CMD_STOP was sent), so this
+    // path covers the companion-initiated case specifically.
+    if (dict_find(iter, KEY_RUN_STOPPED)) {
+        run_summary_show();
+        window_stack_remove(s_window, false);
+        return;
+    }
+
     bool got_metric = false;
 
     Tuple *t = dict_find(iter, KEY_PACE_CURRENT);

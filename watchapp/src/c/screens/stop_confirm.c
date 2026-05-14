@@ -1,6 +1,5 @@
 #include "stop_confirm.h"
-#include "active_run.h"
-#include "run_summary.h"
+#include "stopping.h"
 #include "icons.h"
 #include "../app_message.h"
 
@@ -16,7 +15,9 @@
  *   └────────────────────────┘
  *
  * Button binding (spec §4.2.3):
- *   Up     → confirm: send CMD_STOP, vibrate, transition to run-summary.
+ *   Up     → confirm: send CMD_STOP, vibrate, push stopping screen (which
+ *            waits for the companion's RUN_STOPPED ack before showing
+ *            run-summary).
  *   Down   → cancel: pop back to active-run. Combined with active-run's
  *            Down=open-stop-confirm, this gives the user-visible invariant
  *            "Down twice returns you to the live run".
@@ -49,23 +50,16 @@ static void x_icon_update_proc(Layer *layer, GContext *ctx) {
 // === Buttons ============================================================
 
 static void up_click_handler(ClickRecognizerRef r, void *ctx) {
-    // Send CMD_STOP first so the companion starts its stop-side work
-    // (OpenTracksApi.stopRecording, foreground demote, RunSession.clear)
-    // while we animate to the summary. Fire-and-forget; companion handles
-    // failure paths.
+    // Send CMD_STOP and hand off to the stopping screen. Stopping waits
+    // for the companion's KEY_RUN_STOPPED ack before pushing run-summary;
+    // if the ack never arrives, it surfaces an error rather than lying
+    // to the user that the run is over.
     app_message_send_cmd(KEY_CMD_STOP);
     vibes_short_pulse();  // spec §4.4 — single short pulse on stop ack.
-
-    // Replace the window stack [active_run, stop_confirm] with [run_summary]:
-    //   1. Push run_summary on top (animated forward transition).
-    //   2. Silently remove active_run from underneath it — fires its
-    //      window_unload, which stops HR sampling (battery) and clears the
-    //      inbox handler so run-summary isn't disturbed by trailing metrics.
-    //   3. Silently remove self.
-    // After this, pressing Back on the summary lands on an empty stack and
-    // the watchapp exits cleanly (Pebble default).
-    run_summary_show();
-    window_stack_remove(active_run_get_window(), false);
+    stopping_show();
+    // Remove ourselves so the stack ends up as [active_run, stopping].
+    // active_run stays as a fall-back during the wait; stopping's ack
+    // handler removes it once RUN_STOPPED lands.
     window_stack_remove(s_window, false);
 }
 

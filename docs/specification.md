@@ -60,8 +60,10 @@ The companion uses OpenTracks's **Public API** (Intents) to start/stop and **Das
 
 ### 4.2 Screens
 
-Four screens. Launch lands on idle; linear transitions
-idle → active-run → stop-confirm → run-summary → (Back exits watchapp).
+Five screens. Launch lands on idle; linear transitions
+idle → active-run → stop-confirm → stopping → run-summary → (Back exits
+watchapp). Companion-initiated stop short-circuits stop-confirm + stopping
+and takes active-run directly to run-summary.
 
 #### 4.2.1 Idle
 
@@ -127,6 +129,11 @@ Buttons:
 - **Down**: open stop-confirm screen (§4.2.3).
 - **Select / Up**: no-op.
 
+Inbox: a `RUN_STOPPED` message from the companion (sent when the user
+stops the run from the companion's Stop Run button) pushes run-summary
+on top and removes this screen. The watchapp's UI stays in sync with
+OpenTracks's recording state regardless of which side initiated the stop.
+
 If AppMessages stop arriving from companion >30s: dim metrics 50% to indicate
 stale. No vibration. Resume full brightness when next message arrives.
 
@@ -147,8 +154,9 @@ indicates confirm; an X icon at the right edge aligned with Down indicates
 cancel. The centered title is the only on-screen text.
 
 Buttons:
-- **Up** (✓): send `CMD_STOP`, single short vibration on ack, transition
-  to run-summary (§4.2.4).
+- **Up** (✓): send `CMD_STOP`, single short vibration, transition to
+  the stopping screen (§4.2.4) which waits for the companion's
+  `RUN_STOPPED` ack.
 - **Down** (✕): return to active-run (which has been ticking underneath —
   its inbox handler stayed installed, so stats are up-to-date on return).
   Invariant: from active-run, pressing **Down twice** (once to enter
@@ -156,7 +164,27 @@ Buttons:
 - **Back**: mirrors Down (cancel) — Pebble convention is Back = go back.
 - **Select**: no-op.
 
-#### 4.2.4 Run summary
+#### 4.2.4 Stopping
+
+Shown after Up on stop-confirm while the companion's `RUN_STOPPED`
+acknowledgment is pending. A single centered "Stopping…" title; no
+icons.
+
+State machine:
+- **STOPPING** (entered on push). 10-second timeout. Inbox handler
+  listens for `RUN_STOPPED`. On `RUN_STOPPED`: push run-summary (§4.2.5)
+  on top, remove active-run and self from the stack.
+- **ERROR** (on timeout). Title swaps to "Couldn't stop. Up = retry,
+  Back = ok." Up resends `CMD_STOP` and re-enters STOPPING. Back falls
+  through to run-summary anyway (the run likely did stop and the user
+  can verify on the phone). Select / Down are inert in both states.
+
+This screen exists so the watch UI doesn't lie when the stop fails
+silently — Bluetooth drops, BAL-blocked intent dispatch, or OpenTracks
+misconfigurations all surface as the error state instead of an
+inappropriate run-summary.
+
+#### 4.2.5 Run summary
 
 Shown after a confirmed stop. Snapshots the run's final stats from active-run's accumulators (`s_elapsed_sec`, latest `KEY_DISTANCE`, mean of internal-HRM samples).
 
@@ -334,9 +362,17 @@ No version negotiation. Both sides ignore unknown keys.
 | Key | Name | Type | Payload |
 |---|---|---|---|
 | 110 | `RUN_STARTED` | uint8 | (none) |
+| 111 | `RUN_STOPPED` | uint8 | (none) |
 | 120 | `PACE_CURRENT` | uint16 | sec/mi (capped 3600) |
 | 122 | `TIME` | uint32 | seconds |
 | 123 | `DISTANCE` | uint32 | hundredths of a mile |
+
+`RUN_STOPPED` is sent after every `stopRecording` dispatch, whether the
+stop was initiated by the watch (CMD_STOP) or by the companion's Stop
+Run button. It's the application-level "stop completed" ack — the
+stopping screen (§4.2.4) waits on it before showing run-summary, and
+active-run (§4.2.2) uses it to leave its screen during a
+companion-initiated stop.
 
 ### 7.3 Update cadence
 

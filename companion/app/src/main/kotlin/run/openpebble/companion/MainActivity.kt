@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
+import run.openpebble.companion.pebble.PebbleMessenger
 import run.openpebble.companion.pebble.RunSession
 import run.openpebble.companion.ui.FirstLaunchScreen
 import run.openpebble.companion.ui.HomeScreen
@@ -188,19 +189,22 @@ class MainActivity : ComponentActivity() {
         val pkg = detection.pkg ?: return
         Log.d(TAG, "Start Run → openAppOnWatch + startRecording($pkg)")
         lifecycleScope.launch {
-            run.openpebble.companion.pebble.PebbleMessenger
-                .startWatchapp(this@MainActivity)
+            PebbleMessenger.startWatchapp(this@MainActivity)
             OpenTracksApi.startRecording(this@MainActivity, pkg)
         }
     }
 
     private fun onStopTapped() {
         val pkg = detection.pkg ?: return
-        Log.d(TAG, "Stop Run → stopRecording($pkg)")
+        Log.d(TAG, "Stop Run → stopRecording + sendRunStopped($pkg)")
         OpenTracksApi.stopRecording(this, pkg)
-        // Mirror PebbleListenerService.handleStop: drop RunSession state so
-        // the next watchapp open doesn't trigger a spurious RUN_STARTED replay.
+        // Drop RunSession state so the next watchapp open doesn't replay
+        // RUN_STARTED, and tell the watch the run is over so it can leave
+        // active-run for the run-summary screen.
         RunSession.clear()
+        lifecycleScope.launch {
+            PebbleMessenger.sendRunStopped(this@MainActivity)
+        }
     }
 
     companion object {

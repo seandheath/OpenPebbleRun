@@ -6,9 +6,9 @@
  * underneath in case the user cancels).
  *
  * Buttons:
- *   Up         → send CMD_STOP, vibrate, transition to run-summary (and
- *                silently remove active-run + self from the window stack so
- *                dismissing the summary exits the watchapp).
+ *   Up         → send CMD_STOP, vibrate, push the stopping screen (which
+ *                waits for the companion's RUN_STOPPED ack before showing
+ *                run-summary).
  *   Down / Back → pop self, return to active-run.
  *   Select     → no-op.
  *

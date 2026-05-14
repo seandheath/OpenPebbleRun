@@ -11,6 +11,8 @@
  *
  * Companion → Watch:
  *   110 RUN_STARTED    uint8  (no payload)
+ *   111 RUN_STOPPED    uint8  (no payload; ack for CMD_STOP, also sent on
+ *                              companion-initiated stop)
  *   120 PACE_CURRENT   uint16 (sec/mi, capped 3600)
  *   122 TIME           uint32 (seconds)
  *   123 DISTANCE       uint32 (hundredths of a mile)
@@ -27,6 +29,7 @@
 
 // Companion → Watch
 #define KEY_RUN_STARTED  110
+#define KEY_RUN_STOPPED  111
 #define KEY_PACE_CURRENT 120
 #define KEY_TIME         122
 #define KEY_DISTANCE     123
