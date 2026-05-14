@@ -410,7 +410,6 @@ companion-initiated stop.
 - `POST_NOTIFICATIONS` (API 33+; runtime, requested at first launch) — for the recording notification posted while a run is active
 - `REQUEST_COMPANION_RUN_IN_BACKGROUND` (API 26+; normal; activated by CDM association) — BAL exemption for the listener service
 - `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` (API 30+; normal; activated by CDM association) — allows `Service.startForeground()` from a background callback
-- `REQUEST_COMPANION_PROFILE_WATCH` (API 30+; normal) — required to call `AssociationRequest.setDeviceProfile(DEVICE_PROFILE_WATCH)` in the pairing dialog
 - `<queries>` manifest block listing:
   - `de.dennisguse.opentracks` (and `.playstore`, `.debug`, `.nightly`)
   - Intent action `io.rebble.pebblekit2.RECEIVE_DATA_FROM_WATCH` (required for PebbleKitAndroid2 picker on Android 11+)
