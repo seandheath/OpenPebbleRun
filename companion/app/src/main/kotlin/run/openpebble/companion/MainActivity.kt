@@ -62,22 +62,31 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * POST_NOTIFICATIONS request handle (API 33+). The notification is for the
-     * foreground-service recording state (spec §5.1). If the user denies, the
-     * service still gets foreground state and runs normally — the notification
-     * just won't be visible in the shade.
+     * Runtime permission request handle for the dangerous permissions we need:
+     *
+     *  - **BLUETOOTH_CONNECT** (API 31+): required by PebbleKitAndroid2 for
+     *    its IPC, and — crucially — required by Android 14+'s
+     *    `connectedDevice` foreground-service-type check. Without it,
+     *    `startForeground(... FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)`
+     *    throws `SecurityException` and crashes the process the moment
+     *    DashboardActivity tries to promote PebbleListenerService.
+     *  - **POST_NOTIFICATIONS** (API 33+): for the visible recording
+     *    notification. If denied the service still gets foreground state;
+     *    the notification simply isn't shown.
      */
-    private val notificationsPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        Log.d(TAG, "POST_NOTIFICATIONS granted=$granted")
+    private val runtimePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        for ((perm, granted) in grants) {
+            Log.d(TAG, "$perm granted=$granted")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
-        maybeRequestPostNotifications()
+        maybeRequestRuntimePermissions()
 
         setContent {
             MaterialTheme {
@@ -96,20 +105,26 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Request POST_NOTIFICATIONS on Android 13+ so the foreground-service
-     * notification (spec §5.1) shows in the shade during a run. No-op on
-     * older versions where the permission doesn't exist, and no-op if
-     * already granted.
+     * Request the runtime-dangerous permissions we need. Skips any that are
+     * already granted and any that don't exist on the current API level.
+     * Batched into a single multi-permission prompt for a smoother first
+     * launch.
      */
-    private fun maybeRequestPostNotifications() {
-        if (Build.VERSION.SDK_INT < 33) return
-        val granted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) {
-            notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    private fun maybeRequestRuntimePermissions() {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31 && !isGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
+            needed += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !isGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+            needed += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (needed.isNotEmpty()) {
+            runtimePermissionLauncher.launch(needed.toTypedArray())
         }
     }
+
+    private fun isGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     /**
      * Probe [PebbleInfoRetriever.getConnectedWatches] for the current
