@@ -88,8 +88,9 @@ static void window_load(Window *window) {
     GRect bounds = layer_get_bounds(root);
 
     // Title centered vertically between the two icons (Up ≈ y=50, Down ≈ y=190).
-    s_title = text_layer_create(GRect(0, 88, bounds.size.w, 40));
-    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+    // BITHAM_42_BOLD fits "Stop run?" in 200 px and reads cleanly at arm's length.
+    s_title = text_layer_create(GRect(0, 78, bounds.size.w, 60));
+    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
     text_layer_set_text_alignment(s_title, GTextAlignmentCenter);
     text_layer_set_background_color(s_title, GColorClear);
     text_layer_set_text_color(s_title, GColorBlack);

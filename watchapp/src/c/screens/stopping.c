@@ -101,9 +101,9 @@ static void window_load(Window *window) {
 
     // Title is the only on-screen element. Pre-sized to fit the longest
     // possible text ("Couldn't stop.\nUp = retry\nBack = ok" wraps to
-    // three lines at GOTHIC_24_BOLD on emery).
-    s_title = text_layer_create(GRect(8, 56, bounds.size.w - 16, bounds.size.h - 56));
-    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+    // three lines at GOTHIC_28_BOLD on emery, ≈ 108 px tall total).
+    s_title = text_layer_create(GRect(8, 40, bounds.size.w - 16, bounds.size.h - 40));
+    text_layer_set_font(s_title, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
     text_layer_set_text_alignment(s_title, GTextAlignmentCenter);
     text_layer_set_background_color(s_title, GColorClear);
     text_layer_set_text_color(s_title, GColorBlack);

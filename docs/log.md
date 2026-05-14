@@ -257,6 +257,20 @@ Spec §5.2.1 and `strings.xml`'s first-launch step 2 updated to require both tog
 - Skip the summary, return straight to pre-run: matches old spec but leaves the user reaching for the phone.
 - Send a `RUN_STOPPED` key from companion-initiated stop so those runs also surface a summary on the watch: deferred — requires a new inbox key and active-run handler; out of scope for this change. Companion-initiated stop currently leaves the watch on active-run with stale data; user dismisses with Back.
 
+## 2026-05-14 — Bigger watchapp text
+
+**Decision:** Bump every visible glyph on the watchapp up at least one size class. Concrete changes:
+
+- **idle** prompt `GOTHIC_18` → `GOTHIC_24` ("Start a run on your phone" now wraps to 2 lines instead of 3).
+- **active-run** labels `GOTHIC_14` → `GOTHIC_18`; PACE / CADENCE values `GOTHIC_28_BOLD` → `BITHAM_30_BLACK` (heavier weight, slightly taller); DIST / TIME values `GOTHIC_24_BOLD` → `GOTHIC_28_BOLD`. Cell heights expanded to match.
+- **stop-confirm** "Stop run?" `GOTHIC_28_BOLD` → `BITHAM_42_BOLD`. The previously-empty 200×112 region between the two button-hint icons hosts the larger glyph.
+- **stopping** "Stopping…" `GOTHIC_24_BOLD` → `GOTHIC_28_BOLD`. The error variant ("Couldn't stop. / Up = retry / Back = ok") still fits in three lines.
+- **run-summary** title `GOTHIC_18_BOLD` → `GOTHIC_28_BOLD`; labels `GOTHIC_14` → `GOTHIC_18`; values `GOTHIC_18_BOLD` → `GOTHIC_28_BOLD`; `ROW_STRIDE` 38 → 44 to accommodate the taller cells; `LABEL_W` shrunk from 120 to 108 so larger labels don't run into the value column.
+
+**Rationale:** User feedback — text was too small to read at arm's length while running or walking, and there was substantial unused vertical space on every screen (most obvious on run-summary, which had ~half the screen empty). Active-run gets the most attention since that's the screen the user looks at mid-run; run-summary gets the second-biggest bump since the user is stopped and reading the final stats.
+
+No protocol or behavior changes. RAM footprint moves from ~7747 to ~8433 bytes (still well under the 128 KB Pebble app budget).
+
 ## 2026-05-14 — Robust stop handoff via RUN_STOPPED ack
 
 **Decision:** Add `KEY_RUN_STOPPED` (key 111, companion → watch). The companion sends it after every `OpenTracksApi.stopRecording` dispatch — both when handling `CMD_STOP` from the watch and when the user taps Stop Run in the companion. A new `screens/stopping.{c,h}` screen is inserted between stop-confirm and run-summary; it sends `CMD_STOP`, displays "Stopping…", and waits for `RUN_STOPPED` before pushing run-summary. On a 10 s timeout it shows an error state with Up=retry / Back=fall-through-to-summary. `active_run.c`'s inbox handler also catches `RUN_STOPPED` so companion-initiated stops drop the watchapp's active-run screen to the summary directly.

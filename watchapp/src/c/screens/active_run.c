@@ -288,7 +288,7 @@ static void stop_icon_update_proc(Layer *layer, GContext *ctx) {
 
 static TextLayer *make_label(GRect frame, const char *text) {
     TextLayer *t = text_layer_create(frame);
-    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+    text_layer_set_font(t, fonts_get_system_font(FONT_KEY_GOTHIC_18));
     text_layer_set_text_alignment(t, GTextAlignmentCenter);
     text_layer_set_background_color(t, GColorClear);
     text_layer_set_text_color(t, GColorBlack);
@@ -312,7 +312,7 @@ static void window_load(Window *window) {
 
     // === Row 1: HR (large) ===
     s_hr_label = make_label(
-        GRect(0, ROW_HR_Y + 8, SCREEN_W, 18),
+        GRect(0, ROW_HR_Y + 4, SCREEN_W, 22),
         "HEART RATE");
     s_hr_value = make_value(
         GRect(0, ROW_HR_Y + 26, SCREEN_W, 56),
@@ -322,17 +322,17 @@ static void window_load(Window *window) {
 
     // === Row 2: PACE | CADENCE (medium) ===
     s_pace_label = make_label(
-        GRect(COL_LEFT_X, ROW_MID_Y + 4, COL_W, 16),
+        GRect(COL_LEFT_X, ROW_MID_Y + 2, COL_W, 22),
         "PACE");
     s_pace_value = make_value(
-        GRect(COL_LEFT_X, ROW_MID_Y + 20, COL_W, 44),
-        FONT_KEY_GOTHIC_28_BOLD, "--:--");
+        GRect(COL_LEFT_X, ROW_MID_Y + 24, COL_W, 44),
+        FONT_KEY_BITHAM_30_BLACK, "--:--");
     s_cad_label  = make_label(
-        GRect(COL_RIGHT_X, ROW_MID_Y + 4, COL_W, 16),
+        GRect(COL_RIGHT_X, ROW_MID_Y + 2, COL_W, 22),
         "CADENCE");
     s_cad_value  = make_value(
-        GRect(COL_RIGHT_X, ROW_MID_Y + 20, COL_W, 44),
-        FONT_KEY_GOTHIC_28_BOLD, "---");
+        GRect(COL_RIGHT_X, ROW_MID_Y + 24, COL_W, 44),
+        FONT_KEY_BITHAM_30_BLACK, "---");
     layer_add_child(root, text_layer_get_layer(s_pace_label));
     layer_add_child(root, text_layer_get_layer(s_pace_value));
     layer_add_child(root, text_layer_get_layer(s_cad_label));
@@ -343,17 +343,17 @@ static void window_load(Window *window) {
     // the right edge for the stop-icon hint. Time text remains centered in
     // the narrower cell; "1:23:45" still fits at FONT_KEY_GOTHIC_24_BOLD.
     s_dist_label = make_label(
-        GRect(COL_LEFT_X, ROW_BOT_Y + 4, COL_W, 16),
+        GRect(COL_LEFT_X, ROW_BOT_Y + 2, COL_W, 22),
         "DIST mi");
     s_dist_value = make_value(
-        GRect(COL_LEFT_X, ROW_BOT_Y + 20, COL_W, 36),
-        FONT_KEY_GOTHIC_24_BOLD, "0.00");
+        GRect(COL_LEFT_X, ROW_BOT_Y + 24, COL_W, 40),
+        FONT_KEY_GOTHIC_28_BOLD, "0.00");
     s_time_label = make_label(
-        GRect(COL_RIGHT_X, ROW_BOT_Y + 4, 82, 16),
+        GRect(COL_RIGHT_X, ROW_BOT_Y + 2, 82, 22),
         "TIME");
     s_time_value = make_value(
-        GRect(COL_RIGHT_X, ROW_BOT_Y + 20, 82, 36),
-        FONT_KEY_GOTHIC_24_BOLD, "0:00");
+        GRect(COL_RIGHT_X, ROW_BOT_Y + 24, 82, 40),
+        FONT_KEY_GOTHIC_28_BOLD, "0:00");
     layer_add_child(root, text_layer_get_layer(s_dist_label));
     layer_add_child(root, text_layer_get_layer(s_dist_value));
     layer_add_child(root, text_layer_get_layer(s_time_label));
