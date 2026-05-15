@@ -576,9 +576,25 @@ Authority confirmed as `<applicationId>.content`; paths confirmed as `/dashboard
 - **Known gap:** `OpenTracksVariant.PROBE_ORDER` lacks `<release-variant>.debug` applicationIds. Users testing against a debug-built OpenTracks would hit a rejection. Out of scope for this branch — filed in `docs/pre-release.md`.
 - **Dev-workflow gotcha (diagnosed same session):** `make companion-install` runs `adb uninstall` first, which drops the package's CDM associations. After every reinstall the user must re-pair via the companion's "Pair Pebble for background access" button before the watch-initiated start path works. Filed as **I5** in `docs/pre-release.md`.
 
-## TODOs
+## 2026-05-15 — Android 15 edge-to-edge insets
 
-<!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
+**Decision:** Call `enableEdgeToEdge()` in `MainActivity.onCreate` and `DashboardActivity.onCreate` (before `super.onCreate` for the Activity-extends-ComponentActivity case). Apply `Modifier.windowInsetsPadding(WindowInsets.safeDrawing)` between `fillMaxSize()` and the existing `padding(24.dp)` on the outer `Column` of both `HomeScreen` and `FirstLaunchScreen`. For `DashboardActivity`'s legacy `LinearLayout`+`TextView` tree, install `ViewCompat.setOnApplyWindowInsetsListener` on the root layout and additively pad with `systemBars() or displayCutout()` insets on top of the existing 48px content padding. Bumped `compose-bom` `2024.09.03 → 2026.05.00` and `activity-compose` `1.9.2 → 1.13.0` (M8) in the same diff per audit recommendation.
+
+**Rationale:** `targetSdk=35` (`build.gradle.kts:21`, kept on 35 per spec §5.1) forces edge-to-edge on Android 15+. Pre-fix, no `enableEdgeToEdge()` call existed and no inset modifiers were applied; the Home screen's primary Start/Stop button drew under the gesture bar (audit C1, the last remaining Critical / publish blocker). M8 bundled because (a) the new BOM ships the insets-handling APIs we depend on with current bug fixes, and (b) `enableEdgeToEdge()` itself is in `androidx.activity:activity-compose` ≥ 1.9, but the older 1.9.2 predates several light/dark scrim fixes the new 1.13.0 ships.
+
+**Alternatives considered:**
+- *`WindowCompat.setDecorFitsSystemWindows(window, true)` opt-out on `DashboardActivity`*: rejected — no-op when edge-to-edge is enforced under targetSdk=35; Google's own [Android 15 behavior-changes doc](https://developer.android.com/about/versions/15/behavior-changes-15#edge-to-edge) is explicit. Must handle insets properly.
+- *Compose port of `DashboardActivity`'s view tree*: deferred — listed as optional simplification S5 in `docs/pre-release.md`; the legacy `setOnApplyWindowInsetsListener` path is ~10 lines and the screen is rarely seen.
+- *`Scaffold` with default insets in `MainActivity`*: rejected — `HomeScreen`/`FirstLaunchScreen` are not Scaffold-shaped (no top app bar, no FAB), so the explicit `windowInsetsPadding(safeDrawing)` on the outer `Column` is more direct.
+- *`safeContent` instead of `safeDrawing` insets*: `safeDrawing` is the canonical choice for content that should never be drawn under decoration; `safeContent` additionally excludes IME, which we don't need for these screens.
+
+**Implementation notes:**
+- `MainActivity.kt`: `enableEdgeToEdge()` called as the first line of `onCreate` before `super` is the documented pattern (per [Compose edge-to-edge codelab](https://developer.android.com/codelabs/edge-to-edge)).
+- `HomeScreen.kt` / `FirstLaunchScreen.kt`: order matters — `windowInsetsPadding` must come before `padding(24.dp)` so insets are consumed first; otherwise the 24dp gets stacked under the bars and the safe area shrinks by 24dp.
+- `DashboardActivity.kt`: returns `WindowInsetsCompat.CONSUMED` to halt traversal — this Activity has only one root view, no nested insets-aware children. Combines `systemBars() or displayCutout()` so cutout-rich Pixel 9-class devices get correct horizontal padding too.
+- Manual validation deferred to user (per CLAUDE.md "Never merge without my manual validation"): install on Android 15+ device, confirm Start/Stop button is above the gesture bar, status rows are clear of the status bar, and the dashboard fallback text stays centered without clipping.
+
+
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->

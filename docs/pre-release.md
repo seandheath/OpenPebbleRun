@@ -18,7 +18,7 @@ Scope verified: watchapp (C, SDK 3, emery), companion (Kotlin/Compose, minSdk 26
 ## Critical
 
 ### C1 — Edge-to-edge insets not applied (Android 15 publish blocker)
-- [ ] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/MainActivity.kt:103-117`; `ui/HomeScreen.kt:49-50`; `ui/FirstLaunchScreen.kt`; `DashboardActivity.kt:80-89`
+- [x] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/MainActivity.kt:103-117`; `ui/HomeScreen.kt:49-50`; `ui/FirstLaunchScreen.kt`; `DashboardActivity.kt:80-89` — **Done** in `feat/edge-to-edge-insets` (2026-05-15). See `docs/log.md` entry for the same date.
 - **Problem:** No `enableEdgeToEdge()` call anywhere; no `WindowInsets.safeDrawing` modifier on outer `Column`s. With `targetSdk=35` (`build.gradle.kts:21`), Android 15+ draws behind status and gesture bars by default. The Home `Start Run`/`Stop Run` button — the only primary action — sits under the gesture bar.
 - **Recommendation:** Call `enableEdgeToEdge()` in `MainActivity.onCreate` *before* `setContent`. Wrap the `HomeScreen`/`FirstLaunchScreen` outer `Column` modifier with `.windowInsetsPadding(WindowInsets.safeDrawing)`. `DashboardActivity` either does the same with a Compose port (preferred for consistency) or stays on the legacy View tree with `WindowCompat.setDecorFitsSystemWindows(window, true)`.
 - **Sources:** [edge-to-edge codelab](https://developer.android.com/codelabs/edge-to-edge), [Compose edge-to-edge setup](https://developer.android.com/develop/ui/compose/system/setup-e2e)
@@ -103,7 +103,7 @@ Scope verified: watchapp (C, SDK 3, emery), companion (Kotlin/Compose, minSdk 26
 - **Effort:** S (one line)
 
 ### M8 — Stale compose-bom + activity-compose
-- [ ] **Where:** `companion/app/build.gradle.kts:65, 69`
+- [x] **Where:** `companion/app/build.gradle.kts:65, 69` — **Done** alongside C1 in `feat/edge-to-edge-insets` (2026-05-15). Bumped to `compose-bom 2026.05.00` and `activity-compose 1.13.0`.
 - **Problem:** `compose-bom:2024.09.03` is ~8 months old; `activity-compose:1.9.2` predates several insets-handling fixes. Material3 has shipped improvements relevant to C1.
 - **Recommendation:** Bump while doing C1. Verify compat against Kotlin 2.3.20 + AGP 8.9.3 — pin to whatever the current stable BOM cuts.
 - **Effort:** S
