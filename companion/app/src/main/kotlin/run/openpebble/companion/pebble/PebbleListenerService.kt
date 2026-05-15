@@ -35,9 +35,15 @@ import java.util.UUID
  * Polling lives here, not in `DashboardActivity`, so the user can pocket
  * the phone and let the screen lock without dropping the metric stream.
  * The service is bound by the Pebble Android app the moment the watchapp
- * opens and stays bound until it closes; URI grants from OpenTracks are
- * per-UID and remain usable as long as the DashboardActivity's task is in
- * recents (the Activity itself may be stopped).
+ * opens and stays bound until it closes.
+ *
+ * URI grant lifetime: OpenTracks grants `FLAG_GRANT_READ_URI_PERMISSION` to
+ * our UID when it launches `DashboardActivity` with the dashboard URIs.
+ * `DashboardActivity` then re-delegates the grant to this service by attaching
+ * the URIs as `ClipData` on the `ACTION_PROMOTE_FOREGROUND` start intent (with
+ * the grant flag set). A foreground service is a valid grant target, so the
+ * service holds the grant for as long as it stays alive — independent of
+ * whether the user swipes the Activity's task from recents.
  *
  * Watch → Companion keys handled here:
  *   1  CMD_START → fire OpenTracksApi.startRecording
@@ -96,6 +102,14 @@ class PebbleListenerService : BasePebbleListenerService() {
     private var observedTrackUri: Uri? = null
     private var observedTrackPointsUri: Uri? = null
 
+    // Authoritative URI holders for the run. Populated from the ACTION_PROMOTE_FOREGROUND
+    // intent's ClipData (DashboardActivity re-delegates the OpenTracks grant to this
+    // service component). Cleared in handleStop / onDestroy so the poll loop stops
+    // querying after the run ends. @Volatile because the poll-loop coroutine reads
+    // them on Dispatchers.IO while the main looper writes them in onStartCommand.
+    @Volatile private var trackUri: Uri? = null
+    @Volatile private var trackPointsUri: Uri? = null
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "PebbleListenerService onCreate — starting poll loop")
@@ -105,9 +119,8 @@ class PebbleListenerService : BasePebbleListenerService() {
             while (isActive) {
                 delay(POLL_PERIOD_MS)
                 try {
-                    if (RunSession.trackUri != null) readTrack()
-                    if (RunSession.trackPointsUri != null) readLatestTrackPoint()
-                    ensureObservers()
+                    if (trackUri != null) readTrack()
+                    if (trackPointsUri != null) readLatestTrackPoint()
                 } catch (e: Exception) {
                     Log.w(TAG, "poll read failed", e)
                 }
@@ -126,14 +139,41 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     /**
      * Handle the [ACTION_PROMOTE_FOREGROUND] kick from DashboardActivity.
+     *
+     * The intent carries the validated dashboard URIs as `ClipData[0]` (Track)
+     * and `[1]` (TrackPoints), with `FLAG_GRANT_READ_URI_PERMISSION` set so the
+     * OpenTracks grant is re-delegated to this service component. Stash the
+     * URIs, register observers once (idempotent — `ensureObservers` also
+     * handles a fresh promotion mid-process if a second run starts), then
+     * promote.
+     *
      * DashboardActivity uses `startForegroundService`, so we must call
      * `startForeground` within Android's ~5 s deadline — [promoteToForeground]
-     * does that. START_NOT_STICKY: the Pebble Android app re-binds us on
-     * the next watchapp open, which is the right re-entry trigger.
+     * does that, and we call it unconditionally even on a malformed intent
+     * (the OS would crash us otherwise).
+     *
+     * START_NOT_STICKY: the Pebble Android app re-binds us on the next
+     * watchapp open, which is the right re-entry trigger. A killed-then-
+     * redelivered promote intent would have lost its URI grants anyway.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PROMOTE_FOREGROUND) {
-            Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → promoteToForeground")
+            val clip = intent.clipData
+            val newTrack       = clip?.takeIf { it.itemCount >= 1 }?.getItemAt(0)?.uri
+            val newTrackPoints = clip?.takeIf { it.itemCount >= 2 }?.getItemAt(1)?.uri
+            val grantFlagSet =
+                (intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
+            if (newTrack != null && newTrackPoints != null && grantFlagSet) {
+                Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → stashing URIs " +
+                    "track=$newTrack trackPoints=$newTrackPoints")
+                trackUri = newTrack
+                trackPointsUri = newTrackPoints
+                ensureObservers()
+            } else {
+                Log.w(TAG, "onStartCommand: PROMOTE_FOREGROUND with malformed " +
+                    "ClipData (track=$newTrack trackPoints=$newTrackPoints " +
+                    "grant=$grantFlagSet) — promoting anyway, poll loop will idle")
+            }
             promoteToForeground()
         }
         return START_NOT_STICKY
@@ -207,15 +247,16 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     /**
-     * Register ContentObservers on the current RunSession URIs, idempotently.
-     * Called from each poll tick: if URIs arrived since the last call we
-     * subscribe; if they changed (new run) we re-subscribe; if they were
-     * cleared we unregister.
+     * Register ContentObservers on the current per-instance URIs, idempotently.
+     * Called once from onStartCommand on PROMOTE_FOREGROUND. Logic still
+     * tolerates a mid-process second promotion (different URIs) by
+     * unregister-then-register; clearing (handleStop) goes through
+     * unregisterObserversIfAny() directly rather than ensureObservers.
      */
     private fun ensureObservers() {
         val cr = contentResolver
-        val currentTrack = RunSession.trackUri
-        val currentTrackPoints = RunSession.trackPointsUri
+        val currentTrack = trackUri
+        val currentTrackPoints = trackPointsUri
 
         if (currentTrack != observedTrackUri) {
             if (observedTrackUri != null) cr.unregisterContentObserver(trackObserver)
@@ -257,7 +298,7 @@ class PebbleListenerService : BasePebbleListenerService() {
      * pushes them along with the most recent pace snapshot.
      */
     private fun readTrack() {
-        val uri = RunSession.trackUri ?: return
+        val uri = trackUri ?: return
         contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (!c.moveToFirst()) return@use
             val movingTimeMs = c.longOrNull(COL_MOVING_TIME)
@@ -285,7 +326,7 @@ class PebbleListenerService : BasePebbleListenerService() {
      * speed.
      */
     private fun readLatestTrackPoint() {
-        val uri = RunSession.trackPointsUri ?: return
+        val uri = trackPointsUri ?: return
         contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (!c.moveToLast()) return@use
             var speed: Float? = c.floatOrNull(COL_SPEED)
@@ -399,8 +440,14 @@ class PebbleListenerService : BasePebbleListenerService() {
         // FGS state may still cover the dispatch for ≤10 s after run start.
         OpenTracksApi.stopRecording(this, pkg)
         demoteFromForeground()
-        // Clear RunSession so onAppOpened doesn't replay RUN_STARTED on the
-        // next watchapp open. DashboardActivity.onDestroy also clears these
+        // Stop the poll loop's reads and tear down observers. Demoting the
+        // FGS also drops our hold on the URI grant; nulling the per-instance
+        // refs ensures the poll loop short-circuits on the next tick.
+        trackUri = null
+        trackPointsUri = null
+        unregisterObserversIfAny()
+        // Clear RunSession.active so onAppOpened doesn't replay RUN_STARTED on
+        // the next watchapp open. DashboardActivity.onDestroy also clears this
         // but only when the Android task is torn down.
         RunSession.clear()
         // Acknowledge the stop to the watch. The stopping screen blocks on

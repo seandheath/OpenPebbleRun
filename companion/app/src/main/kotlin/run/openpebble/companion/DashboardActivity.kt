@@ -1,5 +1,6 @@
 package run.openpebble.companion
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -23,8 +24,9 @@ import run.openpebble.companion.pebble.RunSession
 /**
  * OpenTracks Dashboard receiver. Spec §6.2.
  *
- * Receives the dashboard URIs from OpenTracks's callback intent, stashes
- * them in [RunSession], promotes [PebbleListenerService] to foreground,
+ * Receives the dashboard URIs from OpenTracks's callback intent, validates
+ * them, re-delegates the OpenTracks URI grant to [PebbleListenerService] via
+ * `ClipData` + `FLAG_GRANT_READ_URI_PERMISSION` on the promotion intent,
  * sends RUN_STARTED to the watch, and hands the phone's foreground to
  * OpenTracks's own recording UI. The per-tick polling + ContentObserver
  * registration lives in `PebbleListenerService` so it can run with the
@@ -32,10 +34,9 @@ import run.openpebble.companion.pebble.RunSession
  *
  * Why an Activity exists at all: OpenTracks dispatches the dashboard
  * callback via `startActivity(intent)` (`IntentDashboardUtils.startDashboard`),
- * not `startService`. We also use this Activity's task-stack presence
- * to hold the `FLAG_GRANT_READ_URI_PERMISSION` grant alive — Android
- * keeps URI grants valid as long as the receiving Activity's task is in
- * recents.
+ * not `startService`. That's the only reason — the URI grant lifetime is
+ * **not** tied to this Activity's task after the refactor below; it's tied
+ * to the FGS that we forward the URIs to.
  *
  * URI delivery shape (OpenTracks `IntentDashboardUtils`, observed in the field):
  *  - `intent.action`        = "Intent.OpenTracks-Dashboard"
@@ -110,26 +111,40 @@ class DashboardActivity : ComponentActivity() {
 
         Log.d(TAG, "onCreate trackUri=$trackUri trackPointsUri=$trackPointsUri")
 
-        RunSession.trackUri = trackUri
-        RunSession.trackPointsUri = trackPointsUri
         RunSession.active = true
 
         // Promote the listener service to foreground for the duration of the
-        // run. Called from this foreground Activity so the FGS-from-background
-        // gate doesn't apply; the service's onStartCommand calls
-        // startForeground within the OS's 5 s deadline.
+        // run, and re-delegate OpenTracks's URI grant to it.
+        //
+        // ClipData carries both validated URIs (Track at [0], TrackPoints at
+        // [1]); FLAG_GRANT_READ_URI_PERMISSION on the start intent makes a
+        // foreground service a valid grant target. The service's grant lasts
+        // for its own lifetime — independent of whether the user swipes this
+        // Activity's task from recents mid-run (the H2 pre-release-audit bug).
+        //
+        // Called from this foreground Activity so the FGS-from-background gate
+        // doesn't apply; the service's onStartCommand calls startForeground
+        // within the OS's 5 s deadline.
         val promoteIntent = Intent(this, PebbleListenerService::class.java)
             .setAction(PebbleListenerService.ACTION_PROMOTE_FOREGROUND)
+            .apply {
+                clipData = ClipData.newRawUri("dashboard-uris", trackUri).apply {
+                    addItem(ClipData.Item(trackPointsUri))
+                }
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         startForegroundService(promoteIntent)
 
         // Tell the watch the run is recording; idle → active-run.
         lifecycleScope.launch { PebbleMessenger.sendRunStarted(this@DashboardActivity) }
 
         // Hand the phone's foreground to OpenTracks's own recording UI.
-        // We do NOT finish() this Activity — its task-stack presence keeps
-        // the FLAG_GRANT_READ_URI_PERMISSION grant alive. OpenTracks's
-        // launcher Intent uses FLAG_ACTIVITY_NEW_TASK so it comes up on top
-        // of our task without collapsing it.
+        // We do NOT finish() this Activity for back-nav UX: if the user backs
+        // out of OpenTracks they land on the "Recording — see your watch"
+        // fallback rather than the launcher. The grant lifetime is no longer
+        // load-bearing here (the FGS holds it now), but the UX rationale is.
+        // OpenTracks's launcher Intent uses FLAG_ACTIVITY_NEW_TASK so it
+        // comes up on top of our task without collapsing it.
         OpenTracksVariant.cached(this)?.let { variantPkg ->
             OpenTracksApi.openApp(this, variantPkg)
         }
@@ -165,9 +180,9 @@ class DashboardActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Drop the URIs from RunSession so the service stops polling. The
-        // service itself stays alive (still bound by the Pebble app) and
-        // will resume polling when a new run pushes new URIs in.
+        // Reset RunSession.active. The service owns the dashboard URIs and
+        // clears them itself in handleStop / onDestroy, so swiping us from
+        // recents mid-run no longer freezes the metric pipe (H2).
         RunSession.clear()
     }
 

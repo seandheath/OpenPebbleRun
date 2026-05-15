@@ -61,7 +61,7 @@ Scope verified: watchapp (C, SDK 3, emery), companion (Kotlin/Compose, minSdk 26
 - **Effort:** S
 
 ### H2 — URI grant lifetime tied to DashboardActivity task-in-recents
-- [ ] **Where:** `DashboardActivity.kt:28-33` (comment); `PebbleListenerService.kt:75-77`
+- [x] **Where:** `DashboardActivity.kt:28-33` (comment); `PebbleListenerService.kt:75-77` — **Done** in `feat/uri-grant-to-fgs` (2026-05-15) via option **(b)**. URIs are now passed to the FGS as `ClipData` with `FLAG_GRANT_READ_URI_PERMISSION` on the `ACTION_PROMOTE_FOREGROUND` start intent; service holds the grant for its own lifetime. `RunSession.trackUri`/`trackPointsUri` removed; `ensureObservers()` collapsed to a one-shot from `onStartCommand`. See `docs/log.md` entry for the same date.
 - **Problem:** Comments correctly state that `FLAG_GRANT_READ_URI_PERMISSION` survives Activity destroy only while the Activity's *task* remains in recents. If the user swipes us from recents mid-run (likely — they're in OpenTracks's UI), the next `contentResolver.query` throws `SecurityException`, caught silently at `PebbleListenerService.kt:75-77`, metrics freeze, watch dims after 30 s. User reports as "watch said --- mid-run".
 - **Recommendation (two options):**
   - **(a) Cheap mitigation:** Catch `SecurityException` specifically in `readTrack`/`readLatestTrackPoint` and re-foreground OpenTracks once per run with `OpenTracksApi.openApp`. Document the trade-off.
