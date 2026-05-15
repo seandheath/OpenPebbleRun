@@ -8,6 +8,10 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import run.openpebble.companion.opentracks.OpenTracksApi
@@ -54,6 +58,11 @@ import run.openpebble.companion.pebble.RunSession
 class DashboardActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // targetSdk=35 forces edge-to-edge on Android 15+ — see MainActivity.
+        // This Activity is a rarely-seen fallback (the user only lands here
+        // by navigating back from OpenTracks mid-run), but the gesture-bar
+        // overlap on the centered TextView is still visible without insets.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         val clip = intent?.clipData
@@ -125,7 +134,7 @@ class DashboardActivity : ComponentActivity() {
             OpenTracksApi.openApp(this, variantPkg)
         }
 
-        setContentView(LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(48, 48, 48, 48)
@@ -134,7 +143,24 @@ class DashboardActivity : ComponentActivity() {
                 textSize = 20f
                 gravity = Gravity.CENTER
             })
-        })
+        }
+        // Apply system-bar + display-cutout insets on top of the existing 48px
+        // content padding. Required under enforced edge-to-edge (targetSdk=35);
+        // setDecorFitsSystemWindows is a no-op on Android 15+.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, windowInsets ->
+            val insets = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars()
+                    or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.updatePadding(
+                left   = insets.left   + 48,
+                top    = insets.top    + 48,
+                right  = insets.right  + 48,
+                bottom = insets.bottom + 48,
+            )
+            WindowInsetsCompat.CONSUMED
+        }
+        setContentView(root)
     }
 
     override fun onDestroy() {

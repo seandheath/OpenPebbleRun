@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -102,6 +103,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // targetSdk=35 forces edge-to-edge on Android 15+ (no opt-out via
+        // setDecorFitsSystemWindows — that's a no-op when enforced). Insets
+        // are consumed at the screen level via WindowInsets.safeDrawing in
+        // HomeScreen / FirstLaunchScreen.
+        enableEdgeToEdge()
         detection = OpenTracksVariant.detect(this)
         runActive = RunSession.active
         paired = CdmManager.isPaired(this)
