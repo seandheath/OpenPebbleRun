@@ -594,6 +594,26 @@ Authority confirmed as `<applicationId>.content`; paths confirmed as `/dashboard
 - `DashboardActivity.kt`: returns `WindowInsetsCompat.CONSUMED` to halt traversal — this Activity has only one root view, no nested insets-aware children. Combines `systemBars() or displayCutout()` so cutout-rich Pixel 9-class devices get correct horizontal padding too.
 - Manual validation deferred to user (per CLAUDE.md "Never merge without my manual validation"): install on Android 15+ device, confirm Start/Stop button is above the gesture bar, status rows are clear of the status bar, and the dashboard fallback text stays centered without clipping.
 
+## 2026-05-15 — Listener service reliability (audit H1 + H3)
+
+**Decision:** Move `PebbleListenerService`'s 5 s Dashboard poll off the main looper onto `Dispatchers.IO`, and add a 3-strike reconnect to `PebbleMessenger` so a stuck `DefaultPebbleSender` rebuilds its bound-service connection automatically.
+
+**Rationale:**
+- **H1 — main-thread `ContentResolver` I/O.** The poll loop used `Handler(Looper.getMainLooper())` + a posted `Runnable`; `readTrack` / `readLatestTrackPoint` issue cross-process `ContentResolver.query` calls against OpenTracks's `CustomContentProvider`. PebbleKit's bound-service callbacks (`onMessageReceived`, `onAppOpened`, `onAppClosed`) also dispatch on the service's main looper (`BasePebbleListenerService` from PebbleKitAndroid2 v1.1.0). A slow query would queue them, hurting CMD_START/CMD_STOP ack latency. Service has no UI so user-visible ANR risk is nil, but it's the strict-mode antipattern called out by [Android — Coroutines best practices](https://developer.android.com/kotlin/coroutines/coroutines-best-practices). The fix uses the `coroutineScope` already supplied by `BasePebbleListenerService` (same scope as `pushMetrics`/`sendRunStopped`/`onAppOpened` already use); cancellation falls out for free on service destroy. `ContentObserver(null)` lets `onChange` deliver on whichever thread the provider notifies on — readers are safe off-main (only cursor I/O + `@Volatile` writes + `coroutineScope.launch`).
+- **H3 — silent persistent send failure.** `PebbleMessenger.send` and `startWatchapp` logged a non-Success `TransmissionResult` (or a `null` "Pebble app not reachable" result) and returned. The cached `DefaultPebbleSender` stayed bound to a potentially-broken connection; subsequent sends hit the same broken state. Watch's 30 s stale-dim was the only UX signal. Three consecutive non-successes now trigger `close()`, dropping the cached sender so the next call rebuilds the binder via `getOrCreate`. Covers the "Pebble Android app was killed / crashed" case without adding a retry/backoff scheme — retry stays at the screen layer per spec §4.5 (`starting`/`stopping` screens own timeouts). Counter is an `AtomicInteger` because send/startWatchapp are launched concurrently from the listener service's `coroutineScope` (e.g. one in-flight `sendMetrics` + a `sendRunStarted` on `onAppOpened`).
+
+**Alternatives considered:**
+- *H1 — keep `Handler` but move just the reads to a worker thread*: rejected — leaves the dispatcher concern split across two mechanisms; the coroutine scope already exists and the `while (isActive) { delay }` pattern is the documented coroutine-equivalent of `postDelayed`.
+- *H1 — `WorkManager`-style periodic job*: rejected — periodicity is bound to the FGS lifetime (~minutes), well below `WorkManager`'s 15 min minimum and unrelated to its scheduling semantics.
+- *H3 — exponential backoff + retry inside the messenger*: rejected — duplicates the screen-level retry surface (`starting`/`stopping` already time out and re-arm), would mask the connection-dead state instead of recovering it, and contradicts the "single in-flight AppMessage, no library-level retry" invariant in `docs/pre-release.md` "What NOT to change".
+- *H3 — close immediately on first failure*: rejected — a single non-Success is common in real BT conditions (transient peer-unreachable). Three is the smallest number that distinguishes "flap" from "stuck"; ~15 s of dropped sends in the worst case before reconnect.
+
+**Implementation notes:**
+- The `ContentObserver(null)` constructor accepts `null` for the handler parameter; the [`ContentObserver` reference](https://developer.android.com/reference/android/database/ContentObserver) documents this delivers `onChange` on the notifying thread, which for OpenTracks's provider is its own binder pool — perfectly fine for our read-only cursor work.
+- `recordResult(success)` resets the counter on every success and clears it on `close()` so an externally-driven close (e.g. `PebbleListenerService.onDestroy`) doesn't leave a stale counter to bite the next run.
+- No new dependencies. `java.util.concurrent.atomic.AtomicInteger` is JDK stdlib; `kotlinx.coroutines.Dispatchers` / `delay` / `isActive` are already pulled in via `kotlinx-coroutines-android` (used elsewhere in this file).
+- Manual validation deferred to user per CLAUDE.md: smoke test per `docs/pre-release.md` §"How to validate" entries for H1 and H3.
+
 
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->

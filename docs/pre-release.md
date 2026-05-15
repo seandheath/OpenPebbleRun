@@ -41,7 +41,7 @@ Scope verified: watchapp (C, SDK 3, emery), companion (Kotlin/Compose, minSdk 26
 ## High
 
 ### H1 — 5 s poll runs ContentResolver on main thread
-- [ ] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/pebble/PebbleListenerService.kt:58, 69-80, 106, 111`
+- [x] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/pebble/PebbleListenerService.kt:58, 69-80, 106, 111` — **Done** in `feat/listener-reliability` (2026-05-15). See `docs/log.md` entry for the same date.
 - **Problem:** `Handler(Looper.getMainLooper())` posts `pollRunnable` which calls `readTrack()`/`readLatestTrackPoint()` — each a cross-process `ContentResolver.query` against OpenTracks's provider. Service has no UI so user-visible ANR risk is nil, but PebbleKit's bound-service callbacks (`onMessageReceived`, `onAppOpened`, `onAppClosed`) also dispatch on the main looper and will queue behind a slow query. Strict-mode antipattern.
 - **Recommendation:** Replace the `Handler`+`Runnable` with a coroutine on the existing `coroutineScope`:
   ```kotlin
@@ -69,7 +69,7 @@ Scope verified: watchapp (C, SDK 3, emery), companion (Kotlin/Compose, minSdk 26
 - **Effort:** S (a) / M (b). (b) is a refactor and needs explicit approval.
 
 ### H3 — PebbleMessenger silently drops on persistent failure with no reconnect
-- [ ] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/pebble/PebbleMessenger.kt:129-151`
+- [x] **Where:** `companion/app/src/main/kotlin/run/openpebble/companion/pebble/PebbleMessenger.kt:129-151` — **Done** in `feat/listener-reliability` (2026-05-15). See `docs/log.md` entry for the same date.
 - **Problem:** When `sendDataToPebble` returns `null` ("Pebble app not reachable") or a non-Success `TransmissionResult`, the messenger just logs. The cached `DefaultPebbleSender` stays bound to a potentially-broken connection; subsequent sends hit the same broken state. The watch's 30 s stale dim is the only UX signal.
 - **Recommendation:** Track consecutive non-Success results in a counter; after 3 in a row, call `close()` (already implemented at line 50-55) to null `sender` so the next call rebuilds the binder connection. ~8 lines; covers the "Pebble companion app was killed" case without adding a retry/backoff scheme.
 - **Effort:** S

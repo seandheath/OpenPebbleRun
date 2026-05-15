@@ -8,6 +8,7 @@ import io.rebble.pebblekit2.common.model.PebbleDictionary
 import io.rebble.pebblekit2.common.model.PebbleDictionaryItem
 import io.rebble.pebblekit2.common.model.TransmissionResult
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Process-scoped wrapper around [DefaultPebbleSender]. Owns the sender's
@@ -32,6 +33,30 @@ object PebbleMessenger {
     @Volatile private var sender: PebbleSender? = null
 
     /**
+     * Consecutive failure counter for the cached [sender]. Incremented when
+     * `sendDataToPebble` / `startAppOnTheWatch` throw, return null, or return a
+     * non-Success [TransmissionResult]; reset on any success or [close]. After
+     * [MAX_CONSECUTIVE_FAILURES] in a row the sender is closed so the next
+     * call rebuilds the bound-service connection (covers the
+     * "Pebble Android app was killed / crashed" case). No retry/backoff —
+     * retry is a screen-level concern (spec §4.5).
+     *
+     * AtomicInteger because send/startWatchapp are launched on the listener
+     * service's coroutineScope and can run concurrently.
+     */
+    private val failureCount = AtomicInteger(0)
+    private const val MAX_CONSECUTIVE_FAILURES = 3
+
+    private fun recordResult(success: Boolean) {
+        if (success) {
+            failureCount.set(0)
+        } else if (failureCount.incrementAndGet() >= MAX_CONSECUTIVE_FAILURES) {
+            Log.w(TAG, "Resetting Pebble sender after $MAX_CONSECUTIVE_FAILURES consecutive failures")
+            close()
+        }
+    }
+
+    /**
      * Lazily create (or return) the cached [PebbleSender]. Uses the application
      * context to outlive any single Activity / Service callsite.
      */
@@ -51,6 +76,7 @@ object PebbleMessenger {
         synchronized(this) {
             sender?.close()
             sender = null
+            failureCount.set(0)
         }
     }
 
@@ -82,17 +108,22 @@ object PebbleMessenger {
             s.startAppOnTheWatch(WATCHAPP_UUID)
         } catch (e: Exception) {
             Log.w(TAG, "startAppOnTheWatch failed", e)
+            recordResult(success = false)
             return
         }
         if (result == null) {
             Log.d(TAG, "startAppOnTheWatch: Pebble app not reachable")
+            recordResult(success = false)
             return
         }
+        var allOk = true
         for ((watch, tr) in result) {
             if (tr !is TransmissionResult.Success) {
                 Log.d(TAG, "startAppOnTheWatch to $watch: $tr")
+                allOk = false
             }
         }
+        recordResult(success = allOk)
     }
 
     /**
@@ -132,6 +163,7 @@ object PebbleMessenger {
             s.sendDataToPebble(WATCHAPP_UUID, dict)
         } catch (e: Exception) {
             Log.w(TAG, "send failed", e)
+            recordResult(success = false)
             return
         }
         if (result == null) {
@@ -139,14 +171,18 @@ object PebbleMessenger {
             // currently-selected app per PebbleAndroidAppPicker). Home
             // already reflects the connection state.
             Log.d(TAG, "Pebble app not reachable; dropping ${dict.keys}")
+            recordResult(success = false)
             return
         }
         // Non-success results aren't user-actionable mid-run — the watch
         // dims its own metrics on staleness (spec §8.1). Log only.
+        var allOk = true
         for ((watch, tr) in result) {
             if (tr !is TransmissionResult.Success) {
                 Log.d(TAG, "send to $watch: $tr")
+                allOk = false
             }
         }
+        recordResult(success = allOk)
     }
 }
