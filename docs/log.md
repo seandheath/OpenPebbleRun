@@ -29,7 +29,8 @@ and aligns with the URI-grant semantics of `ClipData`-attached Intents on Androi
 revisit during Phase C manual testing — if OpenTracks delivers via a different
 mechanism, the activity logs every Intent shape it receives, so adjustment is
 quick.
-<!-- TODO — verify Dashboard URI delivery shape against current OpenTracks build during manual test -->
+
+**Update (2026-05-15):** Initial assumption (`intent.data` carrying the Track URI) was wrong on the carrier — both URIs arrive in `intent.clipData[0]` and `[1]`. The paths the assumption *implied* (`/dashboard/tracks/<id>` / `/dashboard/trackpoints/<id>`) turned out to be right, verified in the field. Authority is `<applicationId>.content`. See the 2026-05-15 corrigendum entry below.
 
 ## 2026-05-12 — PebbleKitAndroid2 v1.1.0 on Maven Central (spec correction)
 
@@ -538,11 +539,47 @@ Users who *do* want our tap-to-open-Home affordance can enable our Recording cha
 - *Bitmap icons via `package.json` resources* — three PNGs for three trivial primitives; breaks the resource-free deployment invariant for negligible visual gain.
 - *Long-press Back as stop-entry* — less discoverable than a visible icon; no `multi_click` chord pattern exists elsewhere in the codebase to mirror.
 
+## 2026-05-15 — DashboardActivity Intent validation
+
+**Decision:** Reject incoming Dashboard intents in `DashboardActivity.onCreate` unless (a) `getReferrer()` resolves to a package in `OpenTracksVariant.PROBE_ORDER`, (b) the Track / TrackPoints URIs have an authority matching `de.dennisguse.opentracks*.publicapi` with the expected `/dashboard/tracks/` or `/dashboard/trackpoints/` path prefix, and (c) the intent has `FLAG_GRANT_READ_URI_PERMISSION` set. On failure: `Log.w` + `finish()` before any RunSession mutation.
+
+**Rationale:** The Activity is exported (OpenTracks dispatches via `setComponent`, requires `exported=true`). Pre-fix, any installed app could push arbitrary content URIs into `RunSession.trackUri`/`trackPointsUri`; the listener service's 5 s poll loop would then read them. Blast radius limited (no network, no exfil) but gratuitous attack surface and explicit pre-publish TODO:SECURITY. Closes the corresponding TODO from this log's TODO section.
+
+**Alternatives considered:**
+- *Drop `exported="true"`*: rejected — OpenTracks's `setComponent` dispatch requires it.
+- *Add `android:permission` on the Activity*: rejected — OpenTracks holds no permission of ours; would break the integration.
+- *`Binder.getCallingUid()`*: returns -1 for `startActivity` (no IPC). `getReferrer()` is the documented API for exported, no-result Activities.
+- *Check just the URI shape, skip the caller check*: rejected — a malicious app could construct a valid-looking URI but only OpenTracks variants will have actually issued one with a working grant; the caller check is the cheapest defense against forged-URI calls that happen to coincide with a real Track id.
+
+**Implementation notes:**
+- `DashboardActivity.kt`: added private helpers `isCallerOpenTracks` (uses `Activity.getReferrer()`, checks `android-app://<pkg>` against `OpenTracksVariant.PROBE_ORDER`) and `isValidDashboardUri(uri, expectedPathPrefix)`. Guard inserted before the existing `RunSession.trackUri = trackUri` assignment.
+- `getReferrer()` returns the launcher-supplied package on `startActivity`; `EXTRA_REFERRER_NAME` is system-signed-only, so the host is trustworthy under the v0.1 threat model (non-privileged installed apps). Root-equivalent attackers fall outside the model — they can install and trust any app anyway.
+
+## 2026-05-15 — DashboardActivity validation: corrected URI authority (corrigendum)
+
+**Decision:** Fix the authority half of the validator landed earlier today (the path half turned out to be correct as originally written): authority suffix is `<applicationId>.content`, **not** `.publicapi`. Also add an `intent.action == "Intent.OpenTracks-Dashboard"` positive check. Track URI path stays `/dashboard/tracks/<id>` and TrackPoints stays `/dashboard/trackpoints/<id>` — these are what OpenTracks actually emits, contrary to a misread of its source during diagnosis.
+
+**Rationale:** First repro of the watch-initiated start path post-validator (logcat 11:35:57) showed `DashboardActivity` launching with the correct payload but the validator rejecting. Initial diagnosis blamed both authority AND path on a source read that conflated OpenTracks's *internal* `TracksColumns.CONTENT_URI` paths (`/tracks`, `/trackpoints/trackid`) with its *public* Dashboard API URI builder. The second repro (13:54:14 logcat) made the actual shape unambiguous:
+```
+trackUri=content://de.dennisguse.opentracks.playstore.content/dashboard/tracks/138
+trackPointsUri=content://de.dennisguse.opentracks.playstore.content/dashboard/trackpoints/138
+```
+Authority confirmed as `<applicationId>.content`; paths confirmed as `/dashboard/tracks/<id>` and `/dashboard/trackpoints/<id>` (no `/trackid/` infix). The original `DashboardActivity.kt:36-37` doc comments had the paths right — only the validator's incorrect `.publicapi` authority needed fixing.
+
+**Alternatives considered:**
+- *Drop URI authority/path validation entirely*: rejected — the URI grant itself blocks reads of provider URIs the caller doesn't own, but the cheap shape check rejects obvious spoofs before the cursor read and keeps the failure mode loud.
+- *Switch to a regex authority match*: `^de\.dennisguse\.opentracks(\.playstore|\.nightly)?(\.debug)?\.content$` would be tighter; `startsWith + endsWith` is simpler and equivalent for our use.
+
+**Implementation notes:**
+- `DashboardActivity.kt`: `isValidDashboardUri` matches `.content` authority; guard uses `/dashboard/tracks/` and `/dashboard/trackpoints/` (the originals); new `ACTION_DASHBOARD` const + action check; class doc comments updated to reflect the verified-in-field shapes, with an explicit note distinguishing the public Dashboard API paths from OpenTracks's internal `TracksColumns` paths so the conflation isn't made again.
+- No change to `isCallerOpenTracks` — OpenTracks dispatches via `this.startActivity()` *before* `finish()` per source, so the referrer propagates normally (confirmed by `caller=android-app://de.dennisguse.opentracks.playstore` in the 13:54 logcat).
+- **Known gap:** `OpenTracksVariant.PROBE_ORDER` lacks `<release-variant>.debug` applicationIds. Users testing against a debug-built OpenTracks would hit a rejection. Out of scope for this branch — filed in `docs/pre-release.md`.
+- **Dev-workflow gotcha (diagnosed same session):** `make companion-install` runs `adb uninstall` first, which drops the package's CDM associations. After every reinstall the user must re-pair via the companion's "Pair Pebble for background access" button before the watch-initiated start path works. Filed as **I5** in `docs/pre-release.md`.
+
 ## TODOs
 
 <!-- TODO:FEATURE — HR sampling + cadence derivation on watch (spec §14 step 7) -->
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
-<!-- TODO:SECURITY — review <queries> manifest exposure and incoming Intent validation in DashboardActivity before publish -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
 <!-- TODO — populate watchapp/package.json `companionApp.android.url` with the canonical Codeberg repo URL once chosen -->
