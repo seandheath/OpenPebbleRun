@@ -10,14 +10,15 @@ import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.rebble.pebblekit2.client.BasePebbleListenerService
 import io.rebble.pebblekit2.common.model.PebbleDictionary
 import io.rebble.pebblekit2.common.model.ReceiveResult
 import io.rebble.pebblekit2.common.model.WatchIdentifier
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import run.openpebble.companion.MainActivity
 import run.openpebble.companion.R
@@ -55,40 +56,35 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     // === Poll lifecycle ===
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-
     /**
-     * 5 s poll of the Dashboard URIs. OpenTracks's CustomContentProvider
-     * `notifyChange` fires sparsely (25+ s gaps observed); the periodic poll
-     * is the backstop so the watch's metric fields refresh on a predictable
-     * cadence even with no GPS movement (movingtime ticks on its own).
+     * 5 s poll of the Dashboard URIs, driven by a coroutine on
+     * [Dispatchers.IO]. OpenTracks's CustomContentProvider `notifyChange`
+     * fires sparsely (25+ s gaps observed); the periodic poll is the
+     * backstop so the watch's metric fields refresh on a predictable cadence
+     * even with no GPS movement (movingtime ticks on its own).
+     *
+     * Off the main looper deliberately — `contentResolver.query` is a
+     * cross-process call to OpenTracks's provider, and PebbleKit's
+     * bound-service callbacks (`onMessageReceived`, `onAppOpened`,
+     * `onAppClosed`) also dispatch on the main looper; a slow query would
+     * queue them.
      *
      * try/catch is load-bearing: if either reader throws (URI grant revoked,
-     * cursor in unexpected state) we still want to re-post for the next tick.
+     * cursor in unexpected state) we still want to loop for the next tick.
      */
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            try {
-                if (RunSession.trackUri != null) readTrack()
-                if (RunSession.trackPointsUri != null) readLatestTrackPoint()
-                ensureObservers()
-            } catch (e: Exception) {
-                Log.w(TAG, "poll read failed", e)
-            }
-            mainHandler.postDelayed(this, POLL_PERIOD_MS)
-        }
-    }
-
-    private val trackObserver = object : ContentObserver(mainHandler) {
+    private val trackObserver = object : ContentObserver(null) {
         override fun onChange(selfChange: Boolean) {
             // Fire an immediate read; the next poll tick will overwrite if
             // anything else has changed. Keeping the observer is purely an
             // optimisation for the relatively-rare cases where OpenTracks
-            // notifies between poll intervals.
+            // notifies between poll intervals. ContentObserver(null)
+            // delivers onChange on whichever thread the provider notifies on
+            // — fine because readTrack only does cursor I/O + @Volatile
+            // writes + a coroutineScope.launch.
             readTrack()
         }
     }
-    private val trackPointsObserver = object : ContentObserver(mainHandler) {
+    private val trackPointsObserver = object : ContentObserver(null) {
         override fun onChange(selfChange: Boolean) {
             readLatestTrackPoint()
         }
@@ -103,12 +99,24 @@ class PebbleListenerService : BasePebbleListenerService() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "PebbleListenerService onCreate — starting poll loop")
-        mainHandler.postDelayed(pollRunnable, POLL_PERIOD_MS)
+        // The coroutine cancels when coroutineScope (owned by
+        // BasePebbleListenerService) is cancelled on service destroy.
+        coroutineScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(POLL_PERIOD_MS)
+                try {
+                    if (RunSession.trackUri != null) readTrack()
+                    if (RunSession.trackPointsUri != null) readLatestTrackPoint()
+                    ensureObservers()
+                } catch (e: Exception) {
+                    Log.w(TAG, "poll read failed", e)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
         Log.d(TAG, "PebbleListenerService onDestroy — stopping poll loop")
-        mainHandler.removeCallbacks(pollRunnable)
         unregisterObserversIfAny()
         // stopForeground is a no-op if we were never promoted — safe.
         stopForeground(STOP_FOREGROUND_REMOVE)
