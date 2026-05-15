@@ -1,6 +1,7 @@
 package run.openpebble.companion
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -26,17 +27,25 @@ import run.openpebble.companion.pebble.RunSession
  * phone screen off.
  *
  * Why an Activity exists at all: OpenTracks dispatches the dashboard
- * callback via `startActivity(intent)` (`DataProvider.startDashboard`),
+ * callback via `startActivity(intent)` (`IntentDashboardUtils.startDashboard`),
  * not `startService`. We also use this Activity's task-stack presence
  * to hold the `FLAG_GRANT_READ_URI_PERMISSION` grant alive — Android
  * keeps URI grants valid as long as the receiving Activity's task is in
  * recents.
  *
- * URI delivery shape (`DataProvider.startDashboard`):
- *  - `intent.clipData[0]` = Track URI       (`/dashboard/tracks/<ids>`)
- *  - `intent.clipData[1]` = TrackPoints URI (`/dashboard/trackpoints/<ids>`)
- *  - `intent.clipData[2]` = Markers URI     (unused)
+ * URI delivery shape (OpenTracks `IntentDashboardUtils`, observed in the field):
+ *  - `intent.action`        = "Intent.OpenTracks-Dashboard"
+ *  - `intent.clipData[0]`   = Track URI       (`<auth>/dashboard/tracks/<id>`)
+ *  - `intent.clipData[1]`   = TrackPoints URI (`<auth>/dashboard/trackpoints/<id>`)
+ *  - `intent.clipData[2]`   = Markers URI     (unused)
  *  - `intent.data` is never populated.
+ *  - `<auth>` is `<variant-applicationId>.content`, varying per OpenTracks flavor
+ *    (`de.dennisguse.opentracks.content`, `.playstore.content`, etc.).
+ *
+ * Note: these `/dashboard/...` paths are emitted by OpenTracks's public-API URI
+ * builder and are distinct from the internal `TracksColumns.CONTENT_URI` paths
+ * (which are `/tracks` / `/trackpoints/trackid`). Don't conflate the two when
+ * reading the OpenTracks source.
  *
  * UI: a minimalist "Recording — see your watch" fallback. The user only
  * sees it if they navigate back from OpenTracks while the run is still
@@ -50,6 +59,45 @@ class DashboardActivity : ComponentActivity() {
         val clip = intent?.clipData
         val trackUri       = clip?.takeIf { it.itemCount >= 1 }?.getItemAt(0)?.uri
         val trackPointsUri = clip?.takeIf { it.itemCount >= 2 }?.getItemAt(1)?.uri
+
+        // Validate the incoming intent. The Activity is exported (OpenTracks
+        // needs to launch us with the dashboard URIs), so without this guard
+        // any installed app could push arbitrary content URIs into RunSession
+        // and our 5s poll loop would happily read them. Blast radius is
+        // limited (no network, no exfil) but it's gratuitous attack surface.
+        //
+        // Four checks:
+        //  1. Intent action matches OpenTracks's dashboard-callback constant
+        //     (`IntentDashboardUtils.ACTION_DASHBOARD` in OpenTracks source).
+        //     Cheap positive signal; harmless to spoof but raises the bar.
+        //  2. Caller is one of the OpenTracks variants we know about, looked
+        //     up via Activity.getReferrer() — the documented API for exported
+        //     no-result Activities. callingActivity is always null here
+        //     because OpenTracks uses startActivity, not startActivityForResult.
+        //     Only system-signed apps can override the launcher-supplied
+        //     EXTRA_REFERRER_NAME, so the referrer pkg is trustworthy for our
+        //     threat model (non-root installed apps).
+        //  3. URI authority + path match OpenTracks's Dashboard API URIs:
+        //     authority is `<variant-applicationId>.content`; Track URI path
+        //     starts with `/dashboard/tracks/` and TrackPoints with
+        //     `/dashboard/trackpoints/`.
+        //  4. FLAG_GRANT_READ_URI_PERMISSION is set — without it the grant
+        //     would fail downstream anyway; failing fast surfaces malformed
+        //     intents in logcat instead of silent zero-metric reads.
+        val grantFlagSet =
+            ((intent?.flags ?: 0) and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
+        val action = intent?.action
+        if (action != ACTION_DASHBOARD
+            || !isCallerOpenTracks()
+            || !grantFlagSet
+            || !isValidDashboardUri(trackUri, "/dashboard/tracks/")
+            || !isValidDashboardUri(trackPointsUri, "/dashboard/trackpoints/")) {
+            Log.w(TAG, "rejecting dashboard intent: " +
+                "action=$action caller=$referrer grant=$grantFlagSet " +
+                "trackUri=$trackUri trackPointsUri=$trackPointsUri")
+            finish()
+            return
+        }
 
         Log.d(TAG, "onCreate trackUri=$trackUri trackPointsUri=$trackPointsUri")
 
@@ -97,7 +145,50 @@ class DashboardActivity : ComponentActivity() {
         RunSession.clear()
     }
 
+    /**
+     * True iff the caller is one of the OpenTracks variants in
+     * [OpenTracksVariant.PROBE_ORDER]. Resolved via [Activity.getReferrer],
+     * which the system fills in from the launching package for startActivity
+     * calls. EXTRA_REFERRER_NAME can only be overridden by system-signed apps,
+     * so the referrer host is trustworthy under our threat model
+     * (non-privileged installed apps).
+     */
+    private fun isCallerOpenTracks(): Boolean {
+        val ref = referrer ?: return false
+        if (ref.scheme != "android-app") return false
+        val pkg = ref.host ?: return false
+        return pkg in OpenTracksVariant.PROBE_ORDER
+    }
+
+    /**
+     * True iff [uri] looks like one of OpenTracks's Dashboard API URIs.
+     * Authority pattern is `<variant-applicationId>.content` per OpenTracks's
+     * AndroidManifest.xml (`android:authorities="${applicationId}.content"`):
+     *   - de.dennisguse.opentracks.content              (irreproducible flavor)
+     *   - de.dennisguse.opentracks.playstore.content    (reproducible / Play)
+     *   - de.dennisguse.opentracks.nightly.content
+     *   - any of the above with `.debug` for debug builds
+     * Path observed in the field (OpenTracks's public Dashboard API URI builder,
+     * distinct from the internal `TracksColumns.CONTENT_URI`):
+     *   - Track:       /dashboard/tracks/<id>
+     *   - TrackPoints: /dashboard/trackpoints/<id>
+     */
+    private fun isValidDashboardUri(uri: Uri?, expectedPathPrefix: String): Boolean {
+        if (uri == null) return false
+        val auth = uri.authority ?: return false
+        if (!auth.startsWith("de.dennisguse.opentracks") || !auth.endsWith(".content")) {
+            return false
+        }
+        val path = uri.path ?: return false
+        return path.startsWith(expectedPathPrefix)
+    }
+
     companion object {
         private const val TAG = "DashboardActivity"
+
+        // Defined by OpenTracks in IntentDashboardUtils.java as ACTION_DASHBOARD.
+        // Used as a cheap positive signal in the validator: any caller spamming
+        // our component without setting this action gets a louder rejection.
+        private const val ACTION_DASHBOARD = "Intent.OpenTracks-Dashboard"
     }
 }
