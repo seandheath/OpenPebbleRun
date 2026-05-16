@@ -130,7 +130,7 @@ object PebbleMessenger {
      * Push live metrics to the watch. Pace is omitted when null (treated as
      * "stopped" — watch renders "--:--").
      *
-     * - paceSecPerMile: capped at 3600 by caller (TrackStats.paceFromSpeed).
+     * - paceSecPerMile: capped at 3600 by caller (TrackStats.paceFromMeanSpeed).
      * - timeSec:        Track.MOVINGTIME / 1000.
      * - distHundredthsMile: meters → hundredths-of-a-mile (TrackStats).
      */
