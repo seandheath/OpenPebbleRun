@@ -40,22 +40,20 @@ object TrackStats {
     }
 
     /**
-     * Spec §5.3 key 120: TrackPoint `speed` (m/s, from OpenTracks dashboard
-     * API) → pace as seconds per mile. Capped at [MAX_PACE_SEC_PER_MILE].
+     * Spec §5.3 key 120: pace from a mean speed derived from cumulative
+     * `Track.totaldistance` / `Track.movingtime` deltas over a rolling window
+     * (see [PaceWindow]). Capped at [MAX_PACE_SEC_PER_MILE].
      *
-     * Returns null when speed is null or non-positive — the watch renders
-     * "--:--" in that case. Common cases:
-     *  - The cursor's only row is a SEGMENT_START marker (`type=-2`,
-     *    `speed=null`) — happens before the device has moved past OpenTracks's
-     *    min-distance-from-previous threshold.
-     *  - The user is stationary (`speed=0`).
+     * Returns null when undefined: zero/negative time delta (no window yet) or
+     * zero/negative distance delta (stationary on the movingtime axis). The
+     * watch renders "--:--" on null.
      *
-     * No smoothing window — we display what OpenTracks reports. (Earlier the
-     * spec specified a 15 s rolling mean; that approach was abandoned in favor
-     * of letting OpenTracks be the source of truth — see docs/log.md.)
+     * Replaces the earlier instantaneous `paceFromSpeed(TrackPoint.speed)` —
+     * see docs/log.md 2026-05-16 for the field-test rationale.
      */
-    fun paceFromSpeed(speedMs: Float?): Int? {
-        if (speedMs == null || speedMs <= 0f) return null
+    fun paceFromMeanSpeed(distM: Float, timeSec: Long): Int? {
+        if (timeSec <= 0L || distM <= 0f) return null
+        val speedMs = distM / timeSec.toFloat()
         val pace = (METERS_PER_MILE / speedMs).toInt()
         return pace.coerceAtMost(MAX_PACE_SEC_PER_MILE)
     }

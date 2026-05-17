@@ -638,7 +638,43 @@ Authority confirmed as `<applicationId>.content`; paths confirmed as `/dashboard
 - Manual validation deferred to user per CLAUDE.md: install on Android 15+, run the H2 reproducer (start a run, swipe OpenPebbleRun from recents, confirm metrics keep ticking on the watch and `logcat -s PebbleListenerService` keeps logging Track/TrackPoint reads). Also smoke-test the baseline happy-path run-flow and the watch-initiated start path — both go through the same `DashboardActivity.onCreate` and exercise the new ClipData attachment.
 
 
+## 2026-05-16 — Pace smoothing: 15 s rolling window over Track deltas (reversing 2026-05-13)
+
+**Decision:** Replace the instantaneous `TrackPoint.speed` → pace conversion with a 15 s rolling window over cumulative `Track.movingtime` / `Track.totaldistance` deltas. New `PaceWindow` class (`companion/metrics/PaceWindow.kt`) holds the buffer; `TrackStats.paceFromMeanSpeed` does the arithmetic. The poll loop no longer reads TrackPoints — `readLatestTrackPoint()`, the `trackPointsObserver`, `observedTrackPointsUri`, `trackPointsUri`, and the `COL_SPEED`/`COL_TIME` constants are removed from `PebbleListenerService`. `DashboardActivity` still validates both Dashboard URIs that OpenTracks sends and still forwards both in the FGS ClipData (forward-compat), but the service silently ignores `ClipData[1]`.
+
+**Rationale:** Field test (2026-05-16 run) showed pace was jittery enough to be unusable — OpenTracks's per-point speed filtering doesn't smooth the GPS noise the way an averaged window does. The 2026-05-13 "OpenTracks is source of truth" argument was preempting a non-issue; the actual issue is unsmoothed instantaneous speeds. HR, time, and distance worked correctly in the same run.
+
+**Why moving-time as window axis:** `Track.movingtime` excludes paused periods, so the window naturally slides only on actual running time. No special pause-handling code, and pace stays consistent with the displayed TIME field (which is derived from the same column).
+
+**Why endpoint delta:** with cumulative counters, `(newest.dist − oldest.dist) / (newest.time − oldest.time)` is mathematically identical to the time-weighted mean speed over the spanned interval. No per-sample integration buys anything.
+
+**Window reset:** in `onStartCommand` on every fresh PROMOTE_FOREGROUND URI stash and in `handleStop` after the FGS demotion. Covers both "back-to-back run" mid-process and the standard stop-then-start lifecycle.
+
+**Alternatives considered:**
+- *10 s window* — rejected, only ~2 Track samples per window at 5 s poll, barely smooths.
+- *20 s window* — rejected, laggy response to genuine pace changes (hills, finish kicks).
+- *Faster poll (2 s)* — discussed and rejected for v1. Window width drives smoothness, not poll rate; faster polling makes the displayed value update more *often*, not more *smoothly*. Increases BT activity on phone+watch. Reconsider if responsiveness feels lacking after the next field test.
+- *Per-sample integration* — rejected, mathematically equivalent to endpoint delta for cumulative counters.
+- *Watch-side smoothing instead of companion-side* — rejected, the watch already has its hands full with HR sampling + cadence ring + AppMessage inbox; companion side has plenty of CPU budget.
+
+## 2026-05-16 — Cadence diagnostics: APP_LOG of step-count source pending real-run capture
+
+**Decision:** Add diagnostic logging to `active_run.c` to investigate the "cadence stays at 0 for the entire run" report from the 2026-05-16 field test. No behavior change — the existing 3-slot ring + `peek_current_value(HealthMetricStepCount)` polling stays. New logs: (a) `health_service_metric_accessible(HealthMetricStepCount, …)` mask at `window_load`, (b) seed step count at `window_load`, (c) per-tick line in `cadence_tick_cb` showing `steps_now / oldest / filled / spm`.
+
+**Rationale:** The ring-buffer arithmetic (`active_run.c:254`) is correct on its own terms — verified by walking through tick-by-tick. So the bug is upstream in the data source: either Pebble Health is disabled (peek returns 0 unconditionally), the platform doesn't expose StepCount, or updates arrive in batches misaligned with the 5 s tick. We can't pick the right fix without the data.
+
+**Follow-up:** after the next run, capture logs via `pebble logs` and decide. Branches:
+- `steps_now` constant at 0 → Pebble Health setting / hardware limitation. User-side fix or accept the limitation.
+- `accessibility mask = 0` but values increment → API mismatch; switch to event-driven via `HealthEventMovementUpdate`.
+- Values grow but in sparse batches → switch to event-driven so we sample on the watch's update beat.
+- Values grow correctly and `delta > 0` but `spm = 0` → actual logic bug; re-investigate.
+
+**Alternatives considered (and deferred until we have data):**
+- *Switch to `HealthEventMovementUpdate` event-driven now* — rejected as premature. Bigger refactor; pointless if peek isn't the problem.
+- *Render the raw step count on-screen for visual debugging* — rejected, intrusive on the active-run UI for a temporary diagnostic.
+
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
 <!-- TODO — populate watchapp/package.json `companionApp.android.url` with the canonical Codeberg repo URL once chosen -->
+<!-- TODO:FEATURE — pull `pebble logs` from next run, diagnose cadence-zero, implement targeted fix per 2026-05-16 entry -->

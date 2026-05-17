@@ -317,15 +317,15 @@ Steady-state. Shown after first-launch.
 
 ### 5.3 Computed metrics
 
-Companion derives metrics from OpenTracks Dashboard URIs and pushes to watch.
+Companion derives metrics from the OpenTracks Dashboard **Track** URI and pushes to watch. The TrackPoints URI is no longer consumed — pace is derived from Track-level deltas (see below). DashboardActivity still validates both URIs OpenTracks sends and forwards both in the FGS ClipData for forward-compat, but PebbleListenerService only observes Track.
 
 | Key | Metric | Source | Format |
 |---|---|---|---|
-| 120 | Pace (current) | TrackPoint `speed` (m/s) → `1609.344 / speed` → sec/mi, capped at 3600 | uint16 sec/mi |
+| 120 | Pace (current) | rolling 15 s window over `(Track.movingtime, Track.totaldistance)` deltas → sec/mi, capped at 3600 | uint16 sec/mi |
 | 122 | Time | Track `movingtime` (ms) → seconds | uint32 sec |
 | 123 | Distance | Track `totaldistance` (m) → hundredths of a mile | uint32 |
 
-Update on each Dashboard `ContentObserver` notification. Pace uses OpenTracks's reported `speed` directly — no smoothing window. When OpenTracks's dashboard cursor holds only a SEGMENT_START marker (`type = -2`, `speed = null`), pace is null and the watch renders `--:--`; once OpenTracks inserts a normal TrackPoint with a non-null `speed`, the watch updates.
+**Pace window.** `PaceWindow` (companion/`metrics/PaceWindow.kt`) buffers `(movingTimeSec, distMeters)` samples and computes pace as `Δdistance / Δmovingtime` across the oldest sample within the 15 s window and the newest. Pushed once per Track read (5 s poll + ContentObserver). Movingtime axis (not wall-clock) means the window naturally excludes paused periods. Window is reset on each fresh PROMOTE_FOREGROUND URI stash and on run stop. Pace is null (watch renders `--:--`) when the window holds < 2 samples or the runner is stationary on movingtime.
 
 HR and cadence come from the watch and are displayed there directly. The companion does not read or forward HR.
 
@@ -430,7 +430,9 @@ companion-initiated stop.
 
 | Direction | Message | Frequency |
 |---|---|---|
-| Companion → Watch | Metric updates (120, 122, 123) | On each ContentObserver change |
+| Companion → Watch | Metric updates (120, 122, 123) | On each Track ContentObserver change + 5 s backstop poll |
+
+All three live metrics (pace, time, distance) update on the same beat — every Track read feeds [PaceWindow] and produces fresh time/distance from the same row, so a single `sendMetrics` call carries an internally consistent snapshot.
 
 ## 8. Failure modes
 

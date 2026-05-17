@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import run.openpebble.companion.MainActivity
 import run.openpebble.companion.R
 import run.openpebble.companion.cdm.CdmManager
+import run.openpebble.companion.metrics.PaceWindow
 import run.openpebble.companion.metrics.TrackStats
 import run.openpebble.companion.opentracks.OpenTracksApi
 import run.openpebble.companion.opentracks.OpenTracksVariant
@@ -90,25 +91,26 @@ class PebbleListenerService : BasePebbleListenerService() {
             readTrack()
         }
     }
-    private val trackPointsObserver = object : ContentObserver(null) {
-        override fun onChange(selfChange: Boolean) {
-            readLatestTrackPoint()
-        }
-    }
 
-    // Track which URIs the observers are currently bound to (null when none).
-    // ensureObservers() registers as URIs first appear and re-registers if the
-    // URIs themselves change between runs.
+    // Track which URI the observer is currently bound to (null when none).
+    // ensureObservers() registers as the URI first appears and re-registers if it
+    // changes between runs.
     private var observedTrackUri: Uri? = null
-    private var observedTrackPointsUri: Uri? = null
 
-    // Authoritative URI holders for the run. Populated from the ACTION_PROMOTE_FOREGROUND
+    // Authoritative URI holder for the run. Populated from the ACTION_PROMOTE_FOREGROUND
     // intent's ClipData (DashboardActivity re-delegates the OpenTracks grant to this
     // service component). Cleared in handleStop / onDestroy so the poll loop stops
     // querying after the run ends. @Volatile because the poll-loop coroutine reads
-    // them on Dispatchers.IO while the main looper writes them in onStartCommand.
+    // it on Dispatchers.IO while the main looper writes it in onStartCommand.
     @Volatile private var trackUri: Uri? = null
-    @Volatile private var trackPointsUri: Uri? = null
+
+    // Rolling-window pace calculator. Fed in readTrack() from cumulative
+    // (movingtime, totaldistance) samples; queried for the windowed pace
+    // pushed to the watch each tick. Replaces the instantaneous
+    // TrackStats.paceFromSpeed(TrackPoint.speed) path that was visibly jittery
+    // in field testing (docs/log.md 2026-05-16). Reset on every fresh URI
+    // stash and on run stop so a subsequent run starts with an empty buffer.
+    private val paceWindow = PaceWindow()
 
     override fun onCreate() {
         super.onCreate()
@@ -120,7 +122,6 @@ class PebbleListenerService : BasePebbleListenerService() {
                 delay(POLL_PERIOD_MS)
                 try {
                     if (trackUri != null) readTrack()
-                    if (trackPointsUri != null) readLatestTrackPoint()
                 } catch (e: Exception) {
                     Log.w(TAG, "poll read failed", e)
                 }
@@ -140,12 +141,15 @@ class PebbleListenerService : BasePebbleListenerService() {
     /**
      * Handle the [ACTION_PROMOTE_FOREGROUND] kick from DashboardActivity.
      *
-     * The intent carries the validated dashboard URIs as `ClipData[0]` (Track)
-     * and `[1]` (TrackPoints), with `FLAG_GRANT_READ_URI_PERMISSION` set so the
-     * OpenTracks grant is re-delegated to this service component. Stash the
-     * URIs, register observers once (idempotent — `ensureObservers` also
-     * handles a fresh promotion mid-process if a second run starts), then
-     * promote.
+     * The intent carries the validated dashboard Track URI as `ClipData[0]`
+     * with `FLAG_GRANT_READ_URI_PERMISSION` set so the OpenTracks grant is
+     * re-delegated to this service component. (DashboardActivity also packs a
+     * TrackPoints URI as `ClipData[1]` for historical reasons; the service
+     * doesn't consume it anymore — pace is derived from Track-level deltas in
+     * [PaceWindow] rather than per-point speed. We ignore it silently.)
+     * Stash the URI, reset the pace window, register the observer once
+     * (idempotent — `ensureObservers` also handles a fresh promotion mid-process
+     * if a second run starts), then promote.
      *
      * DashboardActivity uses `startForegroundService`, so we must call
      * `startForeground` within Android's ~5 s deadline — [promoteToForeground]
@@ -159,20 +163,18 @@ class PebbleListenerService : BasePebbleListenerService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PROMOTE_FOREGROUND) {
             val clip = intent.clipData
-            val newTrack       = clip?.takeIf { it.itemCount >= 1 }?.getItemAt(0)?.uri
-            val newTrackPoints = clip?.takeIf { it.itemCount >= 2 }?.getItemAt(1)?.uri
+            val newTrack = clip?.takeIf { it.itemCount >= 1 }?.getItemAt(0)?.uri
             val grantFlagSet =
                 (intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
-            if (newTrack != null && newTrackPoints != null && grantFlagSet) {
-                Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → stashing URIs " +
-                    "track=$newTrack trackPoints=$newTrackPoints")
+            if (newTrack != null && grantFlagSet) {
+                Log.d(TAG, "onStartCommand: PROMOTE_FOREGROUND → stashing track=$newTrack")
                 trackUri = newTrack
-                trackPointsUri = newTrackPoints
+                paceWindow.reset()
                 ensureObservers()
             } else {
                 Log.w(TAG, "onStartCommand: PROMOTE_FOREGROUND with malformed " +
-                    "ClipData (track=$newTrack trackPoints=$newTrackPoints " +
-                    "grant=$grantFlagSet) — promoting anyway, poll loop will idle")
+                    "ClipData (track=$newTrack grant=$grantFlagSet) — promoting " +
+                    "anyway, poll loop will idle")
             }
             promoteToForeground()
         }
@@ -247,16 +249,15 @@ class PebbleListenerService : BasePebbleListenerService() {
     }
 
     /**
-     * Register ContentObservers on the current per-instance URIs, idempotently.
-     * Called once from onStartCommand on PROMOTE_FOREGROUND. Logic still
-     * tolerates a mid-process second promotion (different URIs) by
-     * unregister-then-register; clearing (handleStop) goes through
+     * Register the Track ContentObserver on the current per-instance URI,
+     * idempotently. Called once from onStartCommand on PROMOTE_FOREGROUND.
+     * Logic still tolerates a mid-process second promotion (different URI)
+     * by unregister-then-register; clearing (handleStop) goes through
      * unregisterObserversIfAny() directly rather than ensureObservers.
      */
     private fun ensureObservers() {
         val cr = contentResolver
         val currentTrack = trackUri
-        val currentTrackPoints = trackPointsUri
 
         if (currentTrack != observedTrackUri) {
             if (observedTrackUri != null) cr.unregisterContentObserver(trackObserver)
@@ -265,28 +266,20 @@ class PebbleListenerService : BasePebbleListenerService() {
             }
             observedTrackUri = currentTrack
         }
-        if (currentTrackPoints != observedTrackPointsUri) {
-            if (observedTrackPointsUri != null) cr.unregisterContentObserver(trackPointsObserver)
-            if (currentTrackPoints != null) {
-                cr.registerContentObserver(currentTrackPoints, /* notifyForDescendants= */ true, trackPointsObserver)
-            }
-            observedTrackPointsUri = currentTrackPoints
-        }
     }
 
     private fun unregisterObserversIfAny() {
         val cr = contentResolver
         if (observedTrackUri != null) { cr.unregisterContentObserver(trackObserver); observedTrackUri = null }
-        if (observedTrackPointsUri != null) { cr.unregisterContentObserver(trackPointsObserver); observedTrackPointsUri = null }
     }
 
     // === Per-tick metric state ===
 
     /**
-     * Cached most-recent metric values. Refresh time/distance from Track
-     * notifications and pace from TrackPoints notifications, then push the
-     * combined snapshot. Avoids sending stale values when only one cursor
-     * was re-read.
+     * Cached most-recent metric values. All three are refreshed on each Track
+     * read — time/distance directly from the Track row, pace from the
+     * rolling [PaceWindow] which is fed the same `(movingtime, totaldistance)`
+     * sample. Avoids sending stale values mid-update.
      */
     @Volatile private var lastTimeSec: Long = 0L
     @Volatile private var lastDistHundredthsMile: Long = 0L
@@ -294,8 +287,9 @@ class PebbleListenerService : BasePebbleListenerService() {
 
     /**
      * Read the Track row. Spec §6.2: movingtime (long ms), totaldistance
-     * (float meters). Derives watch-wire values (spec §7.2 keys 122, 123) and
-     * pushes them along with the most recent pace snapshot.
+     * (float meters). Derives the watch-wire values (spec §7.2 keys 122, 123)
+     * and feeds the rolling pace window (key 120) from the same cumulative
+     * sample. Single source for all three live metrics.
      */
     private fun readTrack() {
         val uri = trackUri ?: return
@@ -307,37 +301,18 @@ class PebbleListenerService : BasePebbleListenerService() {
             lastTimeSec = TrackStats.movingTimeMsToSec(movingTimeMs)
             lastDistHundredthsMile = TrackStats.meterToHundredthsMile(totalDistanceM)
 
+            // Feed the rolling-window pace calculator with the cumulative pair.
+            // Skip the push when distance is unreadable — a null totaldistance
+            // means the cursor was malformed, and a 0f sample at run start is
+            // already a valid datapoint (the window dedupes on movingtime).
+            if (totalDistanceM != null) {
+                paceWindow.push(lastTimeSec, totalDistanceM)
+                lastPaceSecPerMile = paceWindow.paceSecPerMile()
+            }
+
             Log.d(TAG,
                 "Track  moving=${movingTimeMs}ms→${lastTimeSec}s  " +
-                "distance=${totalDistanceM}m→${lastDistHundredthsMile}/100mi")
-        }
-        pushMetrics()
-    }
-
-    /**
-     * Read the freshest TrackPoint row and convert its `speed` to pace.
-     *
-     * OpenTracks v4.27's dashboard URI exposes `_id, trackid, latitude,
-     * longitude, time, type, speed`. **`ORDER BY` is silently ignored by
-     * OpenTracks's CustomContentProvider** — rows come back in insertion (=
-     * ascending `time`) order regardless of the sortOrder we pass. So we
-     * `moveToLast()` then scan backward past any SEGMENT marker rows
-     * (`type = -2` / `-1`, speed null) to find the freshest row with a usable
-     * speed.
-     */
-    private fun readLatestTrackPoint() {
-        val uri = trackPointsUri ?: return
-        contentResolver.query(uri, null, null, null, null)?.use { c ->
-            if (!c.moveToLast()) return@use
-            var speed: Float? = c.floatOrNull(COL_SPEED)
-            var time: Long? = c.longOrNull(COL_TIME)
-            while (speed == null && c.moveToPrevious()) {
-                speed = c.floatOrNull(COL_SPEED)
-                time  = c.longOrNull(COL_TIME)
-            }
-            lastPaceSecPerMile = TrackStats.paceFromSpeed(speed)
-            Log.d(TAG,
-                "TrackPoint  time=$time  speed=${speed}m/s  " +
+                "distance=${totalDistanceM}m→${lastDistHundredthsMile}/100mi  " +
                 "pace=${lastPaceSecPerMile?.let { "${it}sec/mi" } ?: "--:--"}")
         }
         pushMetrics()
@@ -442,10 +417,13 @@ class PebbleListenerService : BasePebbleListenerService() {
         demoteFromForeground()
         // Stop the poll loop's reads and tear down observers. Demoting the
         // FGS also drops our hold on the URI grant; nulling the per-instance
-        // refs ensures the poll loop short-circuits on the next tick.
+        // ref ensures the poll loop short-circuits on the next tick. Reset
+        // the rolling pace window so a subsequent run starts with an empty
+        // buffer rather than stale samples from the previous run.
         trackUri = null
-        trackPointsUri = null
         unregisterObserversIfAny()
+        paceWindow.reset()
+        lastPaceSecPerMile = null
         // Clear RunSession.active so onAppOpened doesn't replay RUN_STARTED on
         // the next watchapp open. DashboardActivity.onDestroy also clears this
         // but only when the Android task is torn down.
@@ -503,17 +481,16 @@ class PebbleListenerService : BasePebbleListenerService() {
         private const val CHANNEL_ID_RECORDING = "run.openpebble.companion.recording"
         private const val NOTIF_ID_RECORDING = 1001
 
-        // Column names — ALL lowercase. SQLite is case-insensitive in unquoted
-        // SQL but Android's Cursor.getColumnIndexOrThrow is case-sensitive on
-        // most providers, so upper-case names threw IllegalArgumentException →
-        // silently caught → null reads → all-zero metrics on the watch.
+        // Track-row column names — ALL lowercase. SQLite is case-insensitive
+        // in unquoted SQL but Android's Cursor.getColumnIndexOrThrow is
+        // case-sensitive on most providers, so upper-case names threw
+        // IllegalArgumentException → silently caught → null reads → all-zero
+        // metrics on the watch.
         //
-        // sensor_heartrate / sensor_cadence are intentionally absent — the
-        // dashboard URI projects only the basic GPS columns.
+        // The TrackPoints URI is no longer consumed — pace is derived from
+        // Track-level deltas via PaceWindow (docs/log.md 2026-05-16).
         private const val COL_MOVING_TIME    = "movingtime"
         private const val COL_TOTAL_DISTANCE = "totaldistance"
-        private const val COL_SPEED          = "speed"
-        private const val COL_TIME           = "time"
     }
 }
 

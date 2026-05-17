@@ -132,11 +132,17 @@ static void window_unload(Window *window) {
     cancel_timeout();
     if (s_title)  { text_layer_destroy(s_title);  s_title  = NULL; }
     if (s_window) { window_destroy(s_window);     s_window = NULL; }
-    // Clear our inbox handler so a trailing dispatch after we've already
-    // transitioned doesn't run into freed state. The Back-from-error
-    // path re-arms idle's handler before popping us; the success path
-    // hands off to active-run's handler via active_run_show().
-    app_message_set_inbox_handler(NULL);
+    // Do NOT clear the inbox handler here. On the success path
+    // (promote_to_active_run) active_run_show synchronously installs
+    // active-run's handler before window_stack_remove schedules us for
+    // teardown — clearing here would then clobber active-run's handler
+    // when this unload runs, dropping every subsequent KEY_DISTANCE /
+    // KEY_TIME / KEY_PACE_CURRENT message for the rest of the run (the
+    // 2026-05-17 distance-stuck-at-zero bug, watch-init only because
+    // companion-init goes idle→active-run with idle's window staying on
+    // the stack). The error-recovery Back path re-arms idle's handler
+    // before window_stack_pop. Our static inbox_handler doesn't reference
+    // any freed state, so a trailing dispatch is harmless.
 }
 
 // === Public API ==========================================================

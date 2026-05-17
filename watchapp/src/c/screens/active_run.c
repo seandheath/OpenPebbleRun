@@ -262,12 +262,24 @@ static void cadence_tick_cb(void *ctx) {
         HealthMetricStepCount);
 
     int32_t spm = -1;  // sentinel → render "---"
+    int32_t steps_15s_ago = -1;
     if (s_step_filled >= CADENCE_RING_SIZE) {
-        int32_t steps_15s_ago = s_step_ring[s_step_idx];
+        steps_15s_ago = s_step_ring[s_step_idx];
         int32_t delta = steps_now - steps_15s_ago;
         if (delta < CADENCE_MIN_DELTA) delta = CADENCE_MIN_DELTA;
         spm = delta * 4;  // delta / 15 s × 60 s/min
     }
+
+    // Diagnostic for the 2026-05-16 cadence-stays-at-zero report. The ring
+    // arithmetic above is correct on its own terms (verified by walking
+    // through tick-by-tick); the suspect is the data source. Logging
+    // steps_now / oldest / filled lets us tell from `pebble logs` whether
+    // HealthMetricStepCount is updating at all, updating in batches, or
+    // simply unreadable on this hardware. One line per 5 s tick — cheap.
+    APP_LOG(APP_LOG_LEVEL_DEBUG,
+        "cadence tick: steps_now=%ld  oldest=%ld  filled=%u  spm=%ld",
+        (long)steps_now, (long)steps_15s_ago,
+        (unsigned)s_step_filled, (long)spm);
 
     s_step_ring[s_step_idx] = steps_now;
     s_step_idx = (s_step_idx + 1) % CADENCE_RING_SIZE;
@@ -467,10 +479,29 @@ static void window_load(Window *window) {
     // not t≈20 s. We bump s_step_idx past the seed slot so the first
     // tick writes to slot 1 and the seed survives long enough to feed
     // the t=15 s delta computation as ring[s_step_idx=0].
+    //
+    // Probe the metric's accessibility up front. If Pebble Health is
+    // disabled in the user's settings, or the platform doesn't expose
+    // StepCount, peek_current_value silently returns 0 — which makes
+    // every delta 0 and SPM render as a constant "0" for the entire run
+    // (reported 2026-05-16). Logging the mask lets us tell from
+    // `pebble logs` whether the source is reachable before we go looking
+    // at the ring arithmetic.
+    HealthServiceAccessibilityMask cad_access =
+        health_service_metric_accessible(
+            HealthMetricStepCount, time_start_of_today(), time(NULL));
+    APP_LOG(APP_LOG_LEVEL_INFO,
+        "cadence: HealthMetricStepCount accessibility mask=0x%lx "
+        "(Available=0x%x)",
+        (unsigned long)cad_access,
+        HealthServiceAccessibilityMaskAvailable);
+
     s_step_ring[0] = (int32_t)health_service_peek_current_value(
         HealthMetricStepCount);
     s_step_idx = 1;
     s_step_filled = 1;
+    APP_LOG(APP_LOG_LEVEL_INFO, "cadence: seed steps=%ld",
+        (long)s_step_ring[0]);
     // Render the initial "---" eagerly so the layer text matches our
     // state (the value layer's window_load initializer also sets "---",
     // but a duplicate call here keeps the load-then-reshow path coherent
