@@ -261,7 +261,7 @@ Watch behavior:
 Companion plays no role in HR. It does not forward HR, does not read `sensor_heartrate` from OpenTracks, and sends no HR-related AppMessage keys.
 
 **Cadence:**
-- Poll `health_service_peek_current_value(HealthMetricStepCount)` every 5s
+- Poll `health_service_sum_today(HealthMetricStepCount)` every 5s
 - 15s rolling window: SPM = (steps_in_window / 15) × 60
 - Display locally. Not sent to companion.
 

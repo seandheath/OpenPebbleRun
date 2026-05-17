@@ -254,32 +254,23 @@ static void render_cadence(int32_t spm) {
 static void cadence_tick_cb(void *ctx) {
     s_cad_timer = NULL;
 
-    // peek_current_value returns the cumulative daily step count. Safe to
-    // call even if the user hasn't taken any steps today (it returns 0)
-    // and even immediately after a midnight rollover (it returns the
-    // post-rollover count, which is small — handled by the clamp below).
-    int32_t steps_now = (int32_t)health_service_peek_current_value(
+    // sum_today is the canonical reader for cumulative metrics like
+    // HealthMetricStepCount; peek_current_value is documented as
+    // applicable only to instantaneous metrics (HR) and returns 0 for
+    // cumulative ones by API contract:
+    // https://developer.repebble.com/docs/c/Foundation/Event_Service/HealthService/
+    // After local-midnight rollover this returns the small post-rollover
+    // total, which makes the next delta negative — handled by the clamp.
+    int32_t steps_now = (int32_t)health_service_sum_today(
         HealthMetricStepCount);
 
     int32_t spm = -1;  // sentinel → render "---"
-    int32_t steps_15s_ago = -1;
     if (s_step_filled >= CADENCE_RING_SIZE) {
-        steps_15s_ago = s_step_ring[s_step_idx];
+        int32_t steps_15s_ago = s_step_ring[s_step_idx];
         int32_t delta = steps_now - steps_15s_ago;
         if (delta < CADENCE_MIN_DELTA) delta = CADENCE_MIN_DELTA;
         spm = delta * 4;  // delta / 15 s × 60 s/min
     }
-
-    // Diagnostic for the 2026-05-16 cadence-stays-at-zero report. The ring
-    // arithmetic above is correct on its own terms (verified by walking
-    // through tick-by-tick); the suspect is the data source. Logging
-    // steps_now / oldest / filled lets us tell from `pebble logs` whether
-    // HealthMetricStepCount is updating at all, updating in batches, or
-    // simply unreadable on this hardware. One line per 5 s tick — cheap.
-    APP_LOG(APP_LOG_LEVEL_DEBUG,
-        "cadence tick: steps_now=%ld  oldest=%ld  filled=%u  spm=%ld",
-        (long)steps_now, (long)steps_15s_ago,
-        (unsigned)s_step_filled, (long)spm);
 
     s_step_ring[s_step_idx] = steps_now;
     s_step_idx = (s_step_idx + 1) % CADENCE_RING_SIZE;
@@ -482,11 +473,8 @@ static void window_load(Window *window) {
     //
     // Probe the metric's accessibility up front. If Pebble Health is
     // disabled in the user's settings, or the platform doesn't expose
-    // StepCount, peek_current_value silently returns 0 — which makes
-    // every delta 0 and SPM render as a constant "0" for the entire run
-    // (reported 2026-05-16). Logging the mask lets us tell from
-    // `pebble logs` whether the source is reachable before we go looking
-    // at the ring arithmetic.
+    // StepCount, sum_today returns 0 and SPM stays at "0" for the run.
+    // Cheap one-line check before we go diagnose ring arithmetic.
     HealthServiceAccessibilityMask cad_access =
         health_service_metric_accessible(
             HealthMetricStepCount, time_start_of_today(), time(NULL));
@@ -496,7 +484,7 @@ static void window_load(Window *window) {
         (unsigned long)cad_access,
         HealthServiceAccessibilityMaskAvailable);
 
-    s_step_ring[0] = (int32_t)health_service_peek_current_value(
+    s_step_ring[0] = (int32_t)health_service_sum_today(
         HealthMetricStepCount);
     s_step_idx = 1;
     s_step_filled = 1;

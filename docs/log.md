@@ -673,8 +673,26 @@ Authority confirmed as `<applicationId>.content`; paths confirmed as `/dashboard
 - *Switch to `HealthEventMovementUpdate` event-driven now* — rejected as premature. Bigger refactor; pointless if peek isn't the problem.
 - *Render the raw step count on-screen for visual debugging* — rejected, intrusive on the active-run UI for a temporary diagnostic.
 
+## 2026-05-17 — Cadence fix: swap `peek_current_value` → `sum_today` for `HealthMetricStepCount`
+
+**Decision:** Replace `health_service_peek_current_value(HealthMetricStepCount)` with `health_service_sum_today(HealthMetricStepCount)` at both call sites in `active_run.c` (cadence tick + window_load seed). Remove the per-tick diagnostic log added in `2c691cd` (served its purpose). Keep the accessibility-mask probe at startup — cheap, useful for future debugging. Ring buffer, 5 s timer, 15 s window, SPM math, UI sink unchanged.
+
+**Rationale:** `health_service_peek_current_value` is documented as applicable **only to instantaneous metrics** (HR, raw BPM). For cumulative metrics like `HealthMetricStepCount` it returns 0 **by API contract**. Source: https://developer.repebble.com/docs/c/Foundation/Event_Service/HealthService/ — *"NOT applicable for metrics like `HealthMetricStepCount` that must be accumulated over time (it will return 0 if passed that type of metric)."* The canonical reader for daily step totals is `sum_today` (or `sum(metric, time_start_of_today(), time(NULL))`).
+
+This was the actual root cause of the 2026-05-16 cadence-zero report — not Pebble Health disabled, not batch-commit timing, not platform support. Heart rate works in the same handler with `peek_current_value` because HR is instantaneous; that asymmetry was the diagnostic clue.
+
+**Path to this conclusion:**
+1. 2026-05-16: diagnostics committed (`2c691cd`) — accessibility-mask probe + per-tick log.
+2. 2026-05-17 capture 1 (main): mask = `0x1 Available`, but `steps_now = 0` every tick across 25 s of continuous walking. Decision-tree branch 1 (Health disabled) ruled out by the Available bit.
+3. 2026-05-17 probe (`feat/cadence-move-probe`, `40014ea`): read `peek_current_value` from inside `HealthEventMovementUpdate`. Events fire ~every 5 s; `steps = 0` in every event sample too. Rules out branches 2/3 (batch-commit timing).
+4. Web research against repebble HealthService docs identified the API misuse.
+
+**Alternatives considered:**
+- *`health_service_sum(metric, time_start_of_today(), time(NULL))`* — semantically equivalent to `sum_today`, more verbose for no gain.
+- *`health_service_sum(metric, now-15, now)` to skip the ring* — would let us drop the 3-slot ring entirely; deferred as an optional future simplification, not blocking.
+- *Event-driven via `HealthEventMovementUpdate`* — was the leading hypothesis pre-research, rejected after the probe showed `peek` returned 0 in events too.
+
 <!-- TODO:FEATURE — first-launch instructions screen polish + OpenTracks settings deeplink (spec §14 step 10) -->
 <!-- TODO:SECURITY — verify ContentObserver cursor handling does not leak Track URI grants across activity recreation -->
 <!-- TODO:SECURITY — confirm PebbleAndroidAppPicker auto-select default is acceptable; consider exposing the manual picker dialog from client-ui before publish -->
 <!-- TODO — populate watchapp/package.json `companionApp.android.url` with the canonical Codeberg repo URL once chosen -->
-<!-- TODO:FEATURE — pull `pebble logs` from next run, diagnose cadence-zero, implement targeted fix per 2026-05-16 entry -->
